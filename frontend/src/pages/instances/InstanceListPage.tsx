@@ -1,5 +1,6 @@
 ﻿import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import UserLayout from '../../components/UserLayout';
 import { instanceService } from '../../services/instanceService';
 import { useInstanceStatusWebSocket } from '../../hooks/useWebSocket';
@@ -16,6 +17,7 @@ const InstanceListPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [deletingIds, setDeletingIds] = useState<number[]>([]);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   
   // View and filter states
   const [viewMode, setViewMode] = useState<ViewMode>('list');
@@ -94,14 +96,11 @@ const InstanceListPage: React.FC = () => {
   }, [instances, statusFilter, searchQuery]);
 
   const handleDelete = async (id: number) => {
-    if (!window.confirm(t('instances.confirmDelete'))) {
-      return;
-    }
-
     try {
       setDeletingIds((prevIds) => [...prevIds, id]);
       await instanceService.deleteInstance(id);
       setInstances((prevInstances) => prevInstances.filter((instance) => instance.id !== id));
+      setPendingDeleteId(null);
     } catch (err: any) {
       alert(err.response?.data?.error || t('instances.failedToDelete'));
     } finally {
@@ -266,7 +265,7 @@ const InstanceListPage: React.FC = () => {
                 {t('instances.details')}
               </Link>
               <button
-                onClick={() => handleDelete(instance.id)}
+                onClick={() => setPendingDeleteId(instance.id)}
                 disabled={deletingIds.includes(instance.id)}
                 className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none disabled:opacity-50"
               >
@@ -335,7 +334,7 @@ const InstanceListPage: React.FC = () => {
                 </Link>
 
                 <button
-                  onClick={() => handleDelete(instance.id)}
+                  onClick={() => setPendingDeleteId(instance.id)}
                   disabled={deletingIds.includes(instance.id)}
                   className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none disabled:opacity-50"
                 >
@@ -351,6 +350,22 @@ const InstanceListPage: React.FC = () => {
 
   return (
     <UserLayout title={t('instances.listTitle')}>
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        title={t('common.delete')}
+        message={t('instances.confirmDelete')}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        loading={pendingDeleteId !== null && deletingIds.includes(pendingDeleteId)}
+        onCancel={() => setPendingDeleteId(null)}
+        onConfirm={() => {
+          if (pendingDeleteId !== null) {
+            handleDelete(pendingDeleteId);
+          }
+        }}
+      />
+
       {/* Page Description and Connection Status */}
       <div className="mb-6 flex items-center justify-between">
         <p className="text-gray-600">

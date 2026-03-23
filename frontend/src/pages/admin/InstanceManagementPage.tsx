@@ -1,5 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import AdminLayout from '../../components/AdminLayout';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import { useI18n } from '../../contexts/I18nContext';
 import { instanceService } from '../../services/instanceService';
 import { userService } from '../../services/userService';
@@ -16,6 +17,7 @@ const InstanceManagementPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | Instance['status']>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | Instance['type']>('all');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [pendingDeleteInstance, setPendingDeleteInstance] = useState<Instance | null>(null);
 
   useEffect(() => {
     loadData();
@@ -78,10 +80,6 @@ const InstanceManagementPage: React.FC = () => {
     const actionKey = `${action}-${instance.id}`;
     try {
       setActionLoading(actionKey);
-      if (action === 'delete' && !window.confirm(t('admin.confirmDeleteInstance', { name: instance.name }))) {
-        return;
-      }
-
       if (action === 'start') {
         await instanceService.startInstance(instance.id);
       } else if (action === 'stop') {
@@ -90,6 +88,7 @@ const InstanceManagementPage: React.FC = () => {
         await instanceService.restartInstance(instance.id);
       } else if (action === 'delete') {
         await instanceService.deleteInstance(instance.id);
+        setPendingDeleteInstance(null);
       } else if (action === 'sync') {
         await instanceService.forceSyncInstance(instance.id);
       }
@@ -132,6 +131,29 @@ const InstanceManagementPage: React.FC = () => {
 
   return (
     <AdminLayout title={t('admin.instanceManagement')}>
+      <ConfirmDialog
+        open={pendingDeleteInstance !== null}
+        title={t('common.delete')}
+        message={
+          pendingDeleteInstance
+            ? t('admin.confirmDeleteInstance', { name: pendingDeleteInstance.name })
+            : ''
+        }
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        loading={
+          pendingDeleteInstance !== null &&
+          actionLoading === `delete-${pendingDeleteInstance.id}`
+        }
+        onCancel={() => setPendingDeleteInstance(null)}
+        onConfirm={() => {
+          if (pendingDeleteInstance) {
+            handleAction(pendingDeleteInstance, 'delete');
+          }
+        }}
+      />
+
       <div className="space-y-6">
         <div className="app-panel p-5 lg:flex lg:items-center lg:justify-between">
           <div>
@@ -282,7 +304,7 @@ const InstanceManagementPage: React.FC = () => {
                             {t('common.refresh')}
                           </button>
                           <button
-                            onClick={() => handleAction(instance, 'delete')}
+                            onClick={() => setPendingDeleteInstance(instance)}
                             disabled={actionLoading === `delete-${instance.id}`}
                             className="rounded-md bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
                           >

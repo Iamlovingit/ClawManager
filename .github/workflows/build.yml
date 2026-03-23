@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   frontend:
@@ -200,26 +199,3 @@ jobs:
             kill "$(cat /tmp/clawmanager-port-forward.pid)" || true
           fi
 
-  report:
-    name: PR Check Report
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    needs:
-      - frontend
-      - backend
-      - docker
-      - k8s-smoke
-    steps:
-      - name: Create PR comment
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            ## CI Check Report
-
-            - Frontend build: `${{ needs.frontend.result }}`
-            - Backend build and tests: `${{ needs.backend.result }}`
-            - Docker image build: `${{ needs.docker.result }}`
-            - Kubernetes deploy smoke test: `${{ needs.k8s-smoke.result }}`
-
-            Merge should be allowed only when all required checks are `success`.

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import { InstanceAccess } from '../../components/InstanceAccess';
 import { instanceService } from '../../services/instanceService';
 import type { Instance, InstanceStatus } from '../../types/instance';
@@ -52,6 +53,7 @@ const InstanceDetailPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -108,11 +110,8 @@ const InstanceDetailPage: React.FC = () => {
           await instanceService.restartInstance(instance.id);
           break;
         case 'delete':
-          if (!window.confirm(t('instances.confirmDelete'))) {
-            setActionLoading(null);
-            return;
-          }
           await instanceService.deleteInstance(instance.id);
+          setShowDeleteDialog(false);
           navigate('/instances');
           return;
       }
@@ -208,6 +207,18 @@ const InstanceDetailPage: React.FC = () => {
 
   return (
     <div className="app-shell">
+      <ConfirmDialog
+        open={showDeleteDialog}
+        title={t('common.delete')}
+        message={t('instances.confirmDelete')}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        loading={actionLoading === 'delete'}
+        onCancel={() => setShowDeleteDialog(false)}
+        onConfirm={() => handleAction('delete')}
+      />
+
       {/* Header */}
       <header className="app-topbar">
         <div className={`${isAccessTab ? 'max-w-[min(1960px,calc(100vw-1rem))]' : 'max-w-7xl'} mx-auto px-4 sm:px-6 lg:px-8 py-4`}>
@@ -260,7 +271,7 @@ const InstanceDetailPage: React.FC = () => {
               </button>
               
               <button
-                onClick={() => handleAction('delete')}
+                onClick={() => setShowDeleteDialog(true)}
                 disabled={actionLoading === 'delete'}
                 className="rounded-2xl border border-transparent bg-red-100 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-200 disabled:opacity-50"
               >
