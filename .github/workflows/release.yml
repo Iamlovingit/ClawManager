@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  schedule:
+    # 09:00 Asia/Shanghai = 01:00 UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: Force create a release even if the image fingerprint is unchanged
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  prepare-scheduled-release:
+    name: Prepare Scheduled Release
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build image fingerprint
+        shell: bash
+        run: |
+          docker build --iidfile /tmp/clawmanager-release.iid -t clawmanager:release-check .
+          echo "IMAGE_FINGERPRINT=$(cat /tmp/clawmanager-release.iid)" >> "$GITHUB_ENV"
+
+      - name: Read latest release fingerprint
+        id: latest-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const release = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+              const body = release.data.body || "";
+              const match = body.match(/Build-Fingerprint:\s*(\S+)/);
+              core.setOutput("tag", release.data.tag_name || "");
+              core.setOutput("fingerprint", match ? match[1] : "");
+            } catch (error) {
+              if (error.status === 404) {
+                core.setOutput("tag", "");
+                core.setOutput("fingerprint", "");
+                return;
+              }
+              throw error;
+            }
+
+      - name: Decide whether to create a new release tag
+        id: decision
+        shell: bash
+        run: |
+          FORCE_RELEASE="${{ github.event.inputs.force_release || 'false' }}"
+          LAST_FINGERPRINT="${{ steps.latest-release.outputs.fingerprint }}"
+          CURRENT_FINGERPRINT="${IMAGE_FINGERPRINT}"
+          TAG_NAME="v$(date -u +'%Y.%-m.%-d')"
+
+          if [ "$FORCE_RELEASE" = "true" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$LAST_FINGERPRINT" ] && [ "$LAST_FINGERPRINT" = "$CURRENT_FINGERPRINT" ]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag_name=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag_name=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push release tag
+        if: steps.decision.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.decision.outputs.tag_name }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+          git push origin "$TAG_NAME"
+
+  release:
+    name: Publish Release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set release metadata
+        shell: bash
+        run: |
+          REPOSITORY_OWNER_LOWER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "TAG_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          echo "IMAGE_URI=ghcr.io/${REPOSITORY_OWNER_LOWER}/clawmanager" >> "$GITHUB_ENV"
+
+      - name: Build image fingerprint
+        shell: bash
+        run: |
+          docker build --iidfile /tmp/clawmanager-release.iid -t clawmanager:release-check .
+          echo "IMAGE_FINGERPRINT=$(cat /tmp/clawmanager-release.iid)" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push release image
+        id: docker-build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_URI }}:${{ env.TAG_NAME }}
+            ${{ env.IMAGE_URI }}:latest
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          generate_release_notes: true
+          body: |
+            Image: `${{ env.IMAGE_URI }}:${{ env.TAG_NAME }}`
+            Latest: `${{ env.IMAGE_URI }}:latest`
+            Image-Digest: `${{ steps.docker-build.outputs.digest }}`
+            Build-Fingerprint: `${{ env.IMAGE_FINGERPRINT }}`

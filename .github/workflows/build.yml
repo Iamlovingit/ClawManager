@@ -1,0 +1,170 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+  backend:
+    name: Backend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build backend
+        run: go build -o bin/server ./cmd/server
+
+      - name: Run backend tests
+        run: go test ./...
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs:
+      - frontend
+      - backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: clawmanager:ci
+
+  k8s-smoke:
+    name: Kubernetes Deploy Smoke Test
+    runs-on: ubuntu-latest
+    needs:
+      - frontend
+      - backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build local application image
+        run: docker build -t clawmanager:ci .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: clawmanager-ci
+
+      - name: Load image into kind
+        run: kind load docker-image clawmanager:ci --name clawmanager-ci
+
+      - name: Deploy manifest to cluster
+        shell: bash
+        run: |
+          sed 's|image: ghcr.io/yuan-lab-llm/clawmanager:latest|image: clawmanager:ci|' deployments/k8s/clawmanager.yaml | kubectl apply -f -
+
+      - name: Wait for MySQL deployment
+        run: kubectl -n clawmanager-system rollout status deployment/mysql --timeout=300s
+
+      - name: Wait for ClawManager deployment
+        run: kubectl -n clawmanager-system rollout status deployment/clawmanager-app --timeout=300s
+
+      - name: Show cluster status on failure
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n clawmanager-system describe deployment clawmanager-app
+          kubectl -n clawmanager-system describe pod -l app=clawmanager-app
+          kubectl -n clawmanager-system logs deployment/clawmanager-app --tail=200
+
+      - name: Start port-forward
+        run: |
+          kubectl -n clawmanager-system port-forward svc/clawmanager-frontend 8443:443 > /tmp/clawmanager-port-forward.log 2>&1 &
+          echo $! > /tmp/clawmanager-port-forward.pid
+          sleep 10
+
+      - name: Verify health endpoint
+        run: curl --fail --insecure https://127.0.0.1:8443/healthz
+
+      - name: Verify web page is reachable
+        run: curl --fail --insecure https://127.0.0.1:8443/ | grep -i "<!doctype html>"
+
+      - name: Stop port-forward
+        if: always()
+        run: |
+          if [ -f /tmp/clawmanager-port-forward.pid ]; then
+            kill "$(cat /tmp/clawmanager-port-forward.pid)" || true
+          fi
+
+  report:
+    name: PR Check Report
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs:
+      - frontend
+      - backend
+      - docker
+      - k8s-smoke
+    steps:
+      - name: Create PR comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## CI Check Report
+
+            - Frontend build: `${{ needs.frontend.result }}`
+            - Backend build and tests: `${{ needs.backend.result }}`
+            - Docker image build: `${{ needs.docker.result }}`
+            - Kubernetes deploy smoke test: `${{ needs.k8s-smoke.result }}`
+
+            Merge should be allowed only when all required checks are `success`.
