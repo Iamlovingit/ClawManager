@@ -27,7 +27,8 @@
 
 ## News
 
-- `2026-03-26`: AI Gateway documentation and overview were refreshed, including model governance, audit and trace, cost accounting, and risk control. See [AI Gateway](#ai-gateway).
+- [2026-03-26]: 🚀🚀 AI Gateway documentation and overview were refreshed, including model governance, audit and trace, cost accounting, and risk control. See [AI Gateway](#ai-gateway).
+- [2026-03-20]: 🎉🎉 ClawManager Release — ClawManager is now a virtual desktop management platform featuring batch deployment, Webtop support, desktop portal access, runtime image settings, OpenClaw memory/preferences Markdown backup and migration, cluster resource overview, and multilingual documentation.
 
 <p align="center">
   <img src="./docs/main/admin.png" alt="ClawManager Admin" width="32%" />
