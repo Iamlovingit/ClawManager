@@ -33,11 +33,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build image fingerprint
+      - name: Compute release fingerprint
         shell: bash
         run: |
-          docker build --iidfile /tmp/clawmanager-release.iid -t clawmanager:release-check .
-          echo "IMAGE_FINGERPRINT=$(cat /tmp/clawmanager-release.iid)" >> "$GITHUB_ENV"
+          set -euo pipefail
+
+          mapfile -t release_files < <(git ls-files -- \
+            Dockerfile \
+            .dockerignore \
+            frontend \
+            backend \
+            deployments/container/start.sh \
+            deployments/nginx/nginx.conf)
+
+          mapfile -t base_images < <(awk 'toupper($1)=="FROM" { print $2 }' Dockerfile)
+
+          {
+            for image in "${base_images[@]}"; do
+              printf 'base-image %s\n' "$image"
+            done
+
+            for file in "${release_files[@]}"; do
+              sha256sum "$file"
+            done
+          } | sha256sum | awk '{print "IMAGE_FINGERPRINT="$1}' >> "$GITHUB_ENV"
 
       - name: Read latest release fingerprint
         id: latest-release
@@ -133,11 +152,30 @@ jobs:
           fi
           echo "IMAGE_URI=ghcr.io/${REPOSITORY_OWNER_LOWER}/clawmanager" >> "$GITHUB_ENV"
 
-      - name: Build image fingerprint
+      - name: Compute release fingerprint
         shell: bash
         run: |
-          docker build --iidfile /tmp/clawmanager-release.iid -t clawmanager:release-check .
-          echo "IMAGE_FINGERPRINT=$(cat /tmp/clawmanager-release.iid)" >> "$GITHUB_ENV"
+          set -euo pipefail
+
+          mapfile -t release_files < <(git ls-files -- \
+            Dockerfile \
+            .dockerignore \
+            frontend \
+            backend \
+            deployments/container/start.sh \
+            deployments/nginx/nginx.conf)
+
+          mapfile -t base_images < <(awk 'toupper($1)=="FROM" { print $2 }' Dockerfile)
+
+          {
+            for image in "${base_images[@]}"; do
+              printf 'base-image %s\n' "$image"
+            done
+
+            for file in "${release_files[@]}"; do
+              sha256sum "$file"
+            done
+          } | sha256sum | awk '{print "IMAGE_FINGERPRINT="$1}' >> "$GITHUB_ENV"
 
       - name: Checkout release tag
         if: github.event_name != 'push'
