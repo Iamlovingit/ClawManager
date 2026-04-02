@@ -25,6 +25,10 @@
   <img src="https://img.shields.io/badge/License-MIT-2ea44f?style=for-the-badge" alt="MIT License" />
 </p>
 
+<p align="center">
+  <img src="./docs/main/clawmanager_features.jpg" alt="ClawManager Admin" width="100%" />
+</p>
+
 ## News
 
 - [2026-03-26]: 🚀🚀 AI Gateway documentation and overview were refreshed, including model governance, audit and trace, cost accounting, and risk control. See [AI Gateway](#ai-gateway).
