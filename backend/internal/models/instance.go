@@ -29,6 +29,7 @@ type Instance struct {
 	PodIP                    *string    `db:"pod_ip" json:"pod_ip,omitempty"`
 	AccessURL                *string    `db:"access_url" json:"access_url,omitempty"`
 	AccessToken              *string    `db:"access_token" json:"-"`
+	AgentBootstrapToken      *string    `db:"agent_bootstrap_token" json:"-"`
 	OpenClawConfigSnapshotID *int       `db:"openclaw_config_snapshot_id" json:"openclaw_config_snapshot_id,omitempty"`
 	CreatedAt                time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt                time.Time  `db:"updated_at" json:"updated_at"`

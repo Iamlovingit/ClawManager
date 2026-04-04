@@ -14,19 +14,21 @@ import (
 
 // SyncService handles synchronization between database and K8s state
 type SyncService struct {
-	instanceRepo repository.InstanceRepository
-	podService   *k8s.PodService
-	interval     time.Duration
-	stopChan     chan struct{}
+	instanceRepo         repository.InstanceRepository
+	runtimeStatusService InstanceRuntimeStatusService
+	podService           *k8s.PodService
+	interval             time.Duration
+	stopChan             chan struct{}
 }
 
 // NewSyncService creates a new sync service
-func NewSyncService(instanceRepo repository.InstanceRepository) *SyncService {
+func NewSyncService(instanceRepo repository.InstanceRepository, runtimeStatusService InstanceRuntimeStatusService) *SyncService {
 	return &SyncService{
-		instanceRepo: instanceRepo,
-		podService:   k8s.NewPodService(),
-		interval:     5 * time.Second, // Sync every 5 seconds for more responsive status updates
-		stopChan:     make(chan struct{}),
+		instanceRepo:         instanceRepo,
+		runtimeStatusService: runtimeStatusService,
+		podService:           k8s.NewPodService(),
+		interval:             5 * time.Second, // Sync every 5 seconds for more responsive status updates
+		stopChan:             make(chan struct{}),
 	}
 }
 
@@ -115,6 +117,7 @@ func (s *SyncService) syncInstance(ctx context.Context, instance *models.Instanc
 			if err := s.instanceRepo.Update(instance); err != nil {
 				fmt.Printf("Error updating instance %d status: %v\n", instance.ID, err)
 			} else {
+				s.updateInfraStatus(instance.ID, nextStatus)
 				// Broadcast status update
 				GetHub().BroadcastInstanceStatus(instance.UserID, instance)
 			}
@@ -133,6 +136,7 @@ func (s *SyncService) syncInstance(ctx context.Context, instance *models.Instanc
 		instance.Status = desiredStatus
 		needsUpdate = true
 	}
+	s.updateInfraStatus(instance.ID, desiredStatus)
 
 	// Update Pod IP if changed
 	if pod.Status.PodIP != "" {
@@ -164,6 +168,31 @@ func (s *SyncService) syncInstance(ctx context.Context, instance *models.Instanc
 			// Broadcast status update
 			GetHub().BroadcastInstanceStatus(instance.UserID, instance)
 		}
+	}
+}
+
+func (s *SyncService) updateInfraStatus(instanceID int, instanceStatus string) {
+	if s.runtimeStatusService == nil {
+		return
+	}
+	infraStatus := mapInstanceStatusToInfraStatus(instanceStatus)
+	if err := s.runtimeStatusService.UpsertInfraStatus(instanceID, infraStatus); err != nil {
+		fmt.Printf("Error updating runtime infra status for instance %d: %v\n", instanceID, err)
+	}
+}
+
+func mapInstanceStatusToInfraStatus(instanceStatus string) string {
+	switch instanceStatus {
+	case "running":
+		return "ready"
+	case "stopped":
+		return "stopped"
+	case "error":
+		return "error"
+	case "creating":
+		return "creating"
+	default:
+		return "creating"
 	}
 }
 

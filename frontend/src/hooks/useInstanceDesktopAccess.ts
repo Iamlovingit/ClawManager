@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { instanceService } from '../services/instanceService';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { instanceService } from "../services/instanceService";
 
 interface RefreshAccessOptions {
   forceReload?: boolean;
@@ -9,6 +9,7 @@ interface RefreshAccessOptions {
 interface UseInstanceDesktopAccessOptions {
   instanceId: number | null;
   isRunning: boolean;
+  retainSessionOnStop?: boolean;
   resolveEmbedUrl: (url: string | null) => string | null;
   failedMessage: string;
   refreshLeadMs?: number;
@@ -17,36 +18,93 @@ interface UseInstanceDesktopAccessOptions {
 
 const DEFAULT_REFRESH_LEAD_MS = 5 * 60 * 1000;
 const DEFAULT_RETRY_DELAY_MS = 5000;
-const FRAME_ERROR_PATTERN = /(access token expired or invalid|access token required|token does not match instance|failed to proxy request)/i;
+const FRAME_ERROR_PATTERN =
+  /(access token expired or invalid|access token required|token does not match instance|failed to proxy request)/i;
+
+type DesktopSessionSnapshot = {
+  embedUrl: string | null;
+  expiresAt: number | null;
+  hasEstablishedSession: boolean;
+};
+
+const desktopSessionStore = new Map<number, DesktopSessionSnapshot>();
 
 export function useInstanceDesktopAccess({
   instanceId,
   isRunning,
+  retainSessionOnStop = false,
   resolveEmbedUrl,
   failedMessage,
   refreshLeadMs = DEFAULT_REFRESH_LEAD_MS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
 }: UseInstanceDesktopAccessOptions) {
-  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
-  const [expiresAt, setExpiresAt] = useState<Date | null>(null);
+  const initialCachedSession = instanceId
+    ? desktopSessionStore.get(instanceId)
+    : null;
+
+  const [embedUrl, setEmbedUrl] = useState<string | null>(
+    initialCachedSession?.embedUrl ?? null,
+  );
+  const [expiresAt, setExpiresAt] = useState<Date | null>(
+    initialCachedSession?.expiresAt
+      ? new Date(initialCachedSession.expiresAt)
+      : null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [frameKey, setFrameKey] = useState(0);
   const [reconnecting, setReconnecting] = useState(false);
+
   const requestIdRef = useRef(0);
-  const embedUrlRef = useRef<string | null>(null);
-  const expiresAtRef = useRef<Date | null>(null);
+  const embedUrlRef = useRef<string | null>(initialCachedSession?.embedUrl ?? null);
+  const expiresAtRef = useRef<Date | null>(
+    initialCachedSession?.expiresAt
+      ? new Date(initialCachedSession.expiresAt)
+      : null,
+  );
   const retryTimeoutRef = useRef<number | null>(null);
   const refreshTimeoutRef = useRef<number | null>(null);
-  const refreshAccessRef = useRef<((options?: RefreshAccessOptions) => Promise<void>) | null>(null);
+  const refreshAccessRef = useRef<
+    ((options?: RefreshAccessOptions) => Promise<void>) | null
+  >(null);
+  const hasEstablishedSessionRef = useRef(
+    initialCachedSession?.hasEstablishedSession ?? false,
+  );
+
+  const syncSessionStore = useCallback(
+    (patch: Partial<DesktopSessionSnapshot>) => {
+      if (!instanceId) {
+        return;
+      }
+
+      const current = desktopSessionStore.get(instanceId) ?? {
+        embedUrl: embedUrlRef.current,
+        expiresAt: expiresAtRef.current?.getTime() ?? null,
+        hasEstablishedSession: hasEstablishedSessionRef.current,
+      };
+
+      desktopSessionStore.set(instanceId, {
+        embedUrl:
+          patch.embedUrl !== undefined ? patch.embedUrl : current.embedUrl,
+        expiresAt:
+          patch.expiresAt !== undefined ? patch.expiresAt : current.expiresAt,
+        hasEstablishedSession:
+          patch.hasEstablishedSession !== undefined
+            ? patch.hasEstablishedSession
+            : current.hasEstablishedSession,
+      });
+    },
+    [instanceId],
+  );
 
   useEffect(() => {
     embedUrlRef.current = embedUrl;
-  }, [embedUrl]);
+    syncSessionStore({ embedUrl });
+  }, [embedUrl, syncSessionStore]);
 
   useEffect(() => {
     expiresAtRef.current = expiresAt;
-  }, [expiresAt]);
+    syncSessionStore({ expiresAt: expiresAt?.getTime() ?? null });
+  }, [expiresAt, syncSessionStore]);
 
   const clearRetryTimeout = useCallback(() => {
     if (retryTimeoutRef.current !== null) {
@@ -68,98 +126,156 @@ export function useInstanceDesktopAccess({
     requestIdRef.current += 1;
     embedUrlRef.current = null;
     expiresAtRef.current = null;
+    hasEstablishedSessionRef.current = false;
+    if (instanceId) {
+      desktopSessionStore.delete(instanceId);
+    }
     setEmbedUrl(null);
     setExpiresAt(null);
     setError(null);
     setLoading(false);
     setReconnecting(false);
-    setFrameKey(0);
-  }, [clearRefreshTimeout, clearRetryTimeout]);
+  }, [clearRefreshTimeout, clearRetryTimeout, instanceId]);
+
+  const shouldPreserveSession = useCallback(() => {
+    return (
+      retainSessionOnStop &&
+      (hasEstablishedSessionRef.current || Boolean(embedUrlRef.current))
+    );
+  }, [retainSessionOnStop]);
 
   const scheduleRetry = useCallback(() => {
     clearRetryTimeout();
+    if (shouldPreserveSession()) {
+      return;
+    }
     if (!instanceId || !isRunning || document.hidden) {
       return;
     }
 
     retryTimeoutRef.current = window.setTimeout(() => {
       retryTimeoutRef.current = null;
-      void refreshAccessRef.current?.({ forceReload: !embedUrlRef.current, silent: true });
+      void refreshAccessRef.current?.({
+        forceReload: !embedUrlRef.current,
+        silent: true,
+      });
     }, retryDelayMs);
-  }, [clearRetryTimeout, instanceId, isRunning, retryDelayMs]);
+  }, [clearRetryTimeout, instanceId, isRunning, retryDelayMs, shouldPreserveSession]);
 
-  const refreshAccess = useCallback(async ({ forceReload = false, silent = false }: RefreshAccessOptions = {}) => {
-    if (!instanceId || !isRunning) {
-      clearAccessState();
-      return;
-    }
-
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-    clearRetryTimeout();
-    if (silent) {
-      setReconnecting(true);
-    } else {
-      setLoading(true);
-    }
-
-    try {
-      const data = await instanceService.generateAccessToken(instanceId);
-      if (requestId !== requestIdRef.current) {
+  const refreshAccess = useCallback(
+    async ({ forceReload = false, silent = false }: RefreshAccessOptions = {}) => {
+      if (!instanceId || !isRunning) {
+        if (shouldPreserveSession()) {
+          return;
+        }
+        clearAccessState();
         return;
       }
 
-      const nextEmbedUrl = resolveEmbedUrl(data.proxy_url || data.access_url);
-      const nextExpiresAt = new Date(data.expires_at);
-      const previousEmbedUrl = embedUrlRef.current;
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      clearRetryTimeout();
 
-      expiresAtRef.current = nextExpiresAt;
-      setExpiresAt(nextExpiresAt);
-      setError(null);
-
-      if (!previousEmbedUrl || forceReload) {
-        embedUrlRef.current = nextEmbedUrl;
-        setEmbedUrl(nextEmbedUrl);
-        setFrameKey((current) => current + 1);
+      if (silent) {
+        setReconnecting(true);
       } else {
-        setEmbedUrl(previousEmbedUrl);
-      }
-    } catch (err: any) {
-      if (requestId !== requestIdRef.current) {
-        return;
+        setLoading(true);
       }
 
-      setError(err.response?.data?.error || failedMessage);
-      if (!embedUrlRef.current) {
-        setEmbedUrl(null);
-        setExpiresAt(null);
+      try {
+        const data = await instanceService.generateAccessToken(instanceId);
+        if (requestId !== requestIdRef.current) {
+          return;
+        }
+
+        const nextEmbedUrl = resolveEmbedUrl(data.proxy_url || data.access_url);
+        const nextExpiresAt = new Date(data.expires_at);
+        const previousEmbedUrl = embedUrlRef.current;
+
+        expiresAtRef.current = nextExpiresAt;
+        setExpiresAt(nextExpiresAt);
+        setError(null);
+
+        if (!previousEmbedUrl || forceReload) {
+          embedUrlRef.current = nextEmbedUrl;
+          setEmbedUrl(nextEmbedUrl);
+        } else {
+          setEmbedUrl(previousEmbedUrl);
+        }
+
+        syncSessionStore({
+          embedUrl: !previousEmbedUrl || forceReload ? nextEmbedUrl : previousEmbedUrl,
+          expiresAt: nextExpiresAt.getTime(),
+        });
+      } catch (err: any) {
+        if (requestId !== requestIdRef.current) {
+          return;
+        }
+
+        setError(err.response?.data?.error || failedMessage);
+        if (!embedUrlRef.current) {
+          setEmbedUrl(null);
+          setExpiresAt(null);
+        }
+        scheduleRetry();
+      } finally {
+        if (requestId === requestIdRef.current) {
+          setLoading(false);
+          setReconnecting(false);
+        }
       }
-      scheduleRetry();
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoading(false);
-        setReconnecting(false);
-      }
-    }
-  }, [clearAccessState, clearRetryTimeout, failedMessage, instanceId, isRunning, resolveEmbedUrl, scheduleRetry]);
+    },
+    [
+      clearAccessState,
+      clearRetryTimeout,
+      failedMessage,
+      instanceId,
+      isRunning,
+      resolveEmbedUrl,
+      scheduleRetry,
+      shouldPreserveSession,
+      syncSessionStore,
+    ],
+  );
 
   useEffect(() => {
     refreshAccessRef.current = refreshAccess;
   }, [refreshAccess]);
 
   useEffect(() => {
-    if (!instanceId || !isRunning) {
+    if (!instanceId) {
       clearAccessState();
       return;
     }
 
-    void refreshAccess({ forceReload: true });
+    if (!isRunning) {
+      if (shouldPreserveSession() || embedUrlRef.current) {
+        clearRetryTimeout();
+        clearRefreshTimeout();
+        return;
+      }
+
+      clearAccessState();
+      return;
+    }
+
+    if (!embedUrlRef.current) {
+      void refreshAccess({ forceReload: true });
+    }
 
     return () => {
       clearRetryTimeout();
       clearRefreshTimeout();
     };
-  }, [clearAccessState, clearRefreshTimeout, clearRetryTimeout, instanceId, isRunning, refreshAccess]);
+  }, [
+    clearAccessState,
+    clearRefreshTimeout,
+    clearRetryTimeout,
+    instanceId,
+    isRunning,
+    refreshAccess,
+    shouldPreserveSession,
+  ]);
 
   useEffect(() => {
     if (!instanceId || !isRunning || !expiresAt) {
@@ -167,10 +283,16 @@ export function useInstanceDesktopAccess({
       return;
     }
 
+    if (shouldPreserveSession()) {
+      clearRefreshTimeout();
+      return;
+    }
+
     const remainingMs = expiresAt.getTime() - Date.now();
-    const delay = remainingMs <= refreshLeadMs
-      ? Math.max(remainingMs - 30 * 1000, 0)
-      : remainingMs - refreshLeadMs;
+    const delay =
+      remainingMs <= refreshLeadMs
+        ? Math.max(remainingMs - 30 * 1000, 0)
+        : remainingMs - refreshLeadMs;
 
     refreshTimeoutRef.current = window.setTimeout(() => {
       refreshTimeoutRef.current = null;
@@ -178,9 +300,20 @@ export function useInstanceDesktopAccess({
     }, delay);
 
     return clearRefreshTimeout;
-  }, [clearRefreshTimeout, expiresAt, instanceId, isRunning, refreshLeadMs]);
+  }, [
+    clearRefreshTimeout,
+    expiresAt,
+    instanceId,
+    isRunning,
+    refreshLeadMs,
+    shouldPreserveSession,
+  ]);
 
   useEffect(() => {
+    if (shouldPreserveSession()) {
+      return;
+    }
+
     const maybeReconnect = () => {
       if (!instanceId || !isRunning) {
         return;
@@ -188,7 +321,8 @@ export function useInstanceDesktopAccess({
 
       const currentExpiry = expiresAtRef.current?.getTime() ?? 0;
       const hasActiveFrame = Boolean(embedUrlRef.current);
-      const isNearExpiry = currentExpiry === 0 || currentExpiry - Date.now() <= refreshLeadMs;
+      const isNearExpiry =
+        currentExpiry === 0 || currentExpiry - Date.now() <= refreshLeadMs;
 
       if (!hasActiveFrame) {
         void refreshAccessRef.current?.({ forceReload: true, silent: true });
@@ -201,41 +335,54 @@ export function useInstanceDesktopAccess({
     };
 
     const handleVisibilityChange = () => {
-      if (document.hidden) {
-        return;
+      if (!document.hidden) {
+        maybeReconnect();
       }
-
-      maybeReconnect();
     };
 
     const handleFocus = () => {
       maybeReconnect();
     };
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleFocus);
 
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleFocus);
     };
-  }, [instanceId, isRunning, refreshLeadMs]);
+  }, [instanceId, isRunning, refreshLeadMs, shouldPreserveSession]);
 
-  const handleFrameLoad = useCallback((frame: HTMLIFrameElement | null) => {
-    if (!frame) {
-      return;
-    }
-
-    window.setTimeout(() => {
-      try {
-        const frameText = frame.contentDocument?.body?.textContent?.trim() ?? '';
-        if (frameText && FRAME_ERROR_PATTERN.test(frameText)) {
-          void refreshAccessRef.current?.({ forceReload: true, silent: true });
-        }
-      } catch (frameError) {
-        console.error('Failed to inspect desktop frame state', frameError);
+  const handleFrameLoad = useCallback(
+    (frame: HTMLIFrameElement | null) => {
+      if (!frame) {
+        return;
       }
-    }, 0);
+
+      window.setTimeout(() => {
+        try {
+          const frameText = frame.contentDocument?.body?.textContent?.trim() ?? "";
+          if (frameText && FRAME_ERROR_PATTERN.test(frameText)) {
+            if (!hasEstablishedSessionRef.current) {
+              void refreshAccessRef.current?.({ forceReload: true, silent: true });
+            }
+            return;
+          }
+
+          hasEstablishedSessionRef.current = true;
+          syncSessionStore({ hasEstablishedSession: true });
+        } catch (frameError) {
+          console.error("Failed to inspect desktop frame state", frameError);
+        }
+      }, 0);
+    },
+    [syncSessionStore],
+  );
+
+  const handleFrameError = useCallback(() => {
+    if (!hasEstablishedSessionRef.current) {
+      void refreshAccessRef.current?.({ forceReload: true, silent: true });
+    }
   }, []);
 
   return {
@@ -243,9 +390,9 @@ export function useInstanceDesktopAccess({
     expiresAt,
     loading,
     error,
-    frameKey,
     reconnecting,
     refreshAccess,
     handleFrameLoad,
+    handleFrameError,
   };
 }

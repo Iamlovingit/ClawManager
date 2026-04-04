@@ -1,12 +1,12 @@
-import type { OpenClawConfigPlan } from './openclawConfig';
+import type { OpenClawConfigPlan } from "./openclawConfig";
 
 export interface Instance {
   id: number;
   user_id: number;
   name: string;
   description?: string;
-  type: 'openclaw' | 'ubuntu' | 'debian' | 'centos' | 'custom' | 'webtop';
-  status: 'creating' | 'running' | 'stopped' | 'error' | 'deleting';
+  type: "openclaw" | "ubuntu" | "debian" | "centos" | "custom" | "webtop";
+  status: "creating" | "running" | "stopped" | "error" | "deleting";
   cpu_cores: number;
   memory_gb: number;
   disk_gb: number;
@@ -40,10 +40,74 @@ export interface InstanceStatus {
   started_at?: string;
 }
 
+export interface AgentInfo {
+  agent_id: string;
+  agent_version: string;
+  protocol_version: string;
+  status: string;
+  capabilities: string[];
+  host_info?: Record<string, unknown>;
+  last_heartbeat_at?: string;
+  last_reported_at?: string;
+  last_seen_ip?: string;
+  registered_at?: string;
+}
+
+export interface RuntimeStatus {
+  instance_id: number;
+  infra_status: string;
+  agent_status: string;
+  openclaw_status: string;
+  openclaw_pid?: number;
+  openclaw_version?: string;
+  current_config_revision_id?: number;
+  desired_config_revision_id?: number;
+  system_info?: Record<string, unknown>;
+  health?: Record<string, unknown>;
+  summary?: Record<string, unknown>;
+  last_reported_at?: string;
+}
+
+export interface InstanceRuntimeCommand {
+  id: number;
+  command_type: string;
+  status: string;
+  idempotency_key: string;
+  issued_by?: number;
+  issued_at: string;
+  dispatched_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  timeout_seconds: number;
+  payload?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error_message?: string;
+}
+
+export interface InstanceRuntimeDetails {
+  runtime?: RuntimeStatus;
+  agent?: AgentInfo;
+  commands: InstanceRuntimeCommand[];
+}
+
+export interface InstanceConfigRevision {
+  id: number;
+  instance_id: number;
+  source_snapshot_id?: number;
+  source_bundle_id?: number;
+  revision_no: number;
+  checksum: string;
+  status: string;
+  published_by?: number;
+  published_at?: string;
+  activated_at?: string;
+  content: unknown;
+}
+
 export interface CreateInstanceRequest {
   name: string;
   description?: string;
-  type: 'openclaw' | 'ubuntu' | 'debian' | 'centos' | 'custom' | 'webtop';
+  type: "openclaw" | "ubuntu" | "debian" | "centos" | "custom" | "webtop";
   cpu_cores: number;
   memory_gb: number;
   disk_gb: number;
@@ -80,75 +144,75 @@ export interface InstanceType {
 
 export const INSTANCE_TYPES: InstanceType[] = [
   {
-    id: 'ubuntu',
-    name: 'Ubuntu Desktop',
-    description: 'Popular Linux distribution with GNOME desktop',
-    icon: 'ubuntu',
-    defaultOs: 'ubuntu',
-    defaultVersion: '22.04'
+    id: "ubuntu",
+    name: "Ubuntu Desktop",
+    description: "Popular Linux distribution with GNOME desktop",
+    icon: "ubuntu",
+    defaultOs: "ubuntu",
+    defaultVersion: "22.04",
   },
   {
-    id: 'debian',
-    name: 'Debian Desktop',
-    description: 'Stable and secure Linux distribution',
-    icon: 'debian',
-    defaultOs: 'debian',
-    defaultVersion: '12'
+    id: "debian",
+    name: "Debian Desktop",
+    description: "Stable and secure Linux distribution",
+    icon: "debian",
+    defaultOs: "debian",
+    defaultVersion: "12",
   },
   {
-    id: 'centos',
-    name: 'CentOS Desktop',
-    description: 'Enterprise-class Linux distribution',
-    icon: 'centos',
-    defaultOs: 'centos',
-    defaultVersion: '9'
+    id: "centos",
+    name: "CentOS Desktop",
+    description: "Enterprise-class Linux distribution",
+    icon: "centos",
+    defaultOs: "centos",
+    defaultVersion: "9",
   },
   {
-    id: 'openclaw',
-    name: 'OpenClaw Desktop',
-    description: 'Optimized desktop environment',
-    icon: 'openclaw',
-    defaultOs: 'openclaw',
-    defaultVersion: 'latest'
+    id: "openclaw",
+    name: "OpenClaw Desktop",
+    description: "Optimized desktop environment",
+    icon: "openclaw",
+    defaultOs: "openclaw",
+    defaultVersion: "latest",
   },
   {
-    id: 'webtop',
-    name: 'Webtop Desktop',
-    description: 'Browser-based Linux desktop proxied through ClawManager',
-    icon: 'webtop',
-    defaultOs: 'ubuntu',
-    defaultVersion: 'xfce'
+    id: "webtop",
+    name: "Webtop Desktop",
+    description: "Browser-based Linux desktop proxied through ClawManager",
+    icon: "webtop",
+    defaultOs: "ubuntu",
+    defaultVersion: "xfce",
   },
   {
-    id: 'custom',
-    name: 'Custom Image',
-    description: 'Use your own custom image',
-    icon: 'custom',
-    defaultOs: 'custom',
-    defaultVersion: 'latest'
-  }
+    id: "custom",
+    name: "Custom Image",
+    description: "Use your own custom image",
+    icon: "custom",
+    defaultOs: "custom",
+    defaultVersion: "latest",
+  },
 ];
 
 export const PRESET_CONFIGS = {
   small: {
-    name: 'Small',
+    name: "Small",
     cpu_cores: 2,
     memory_gb: 4,
     disk_gb: 20,
-    description: 'Suitable for light tasks'
+    description: "Suitable for light tasks",
   },
   medium: {
-    name: 'Medium',
+    name: "Medium",
     cpu_cores: 4,
     memory_gb: 8,
     disk_gb: 50,
-    description: 'Good for development'
+    description: "Good for development",
   },
   large: {
-    name: 'Large',
+    name: "Large",
     cpu_cores: 8,
     memory_gb: 16,
     disk_gb: 100,
-    description: 'For heavy workloads'
-  }
+    description: "For heavy workloads",
+  },
 };

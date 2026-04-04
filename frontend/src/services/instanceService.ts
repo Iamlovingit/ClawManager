@@ -1,35 +1,43 @@
-import api from './api';
-import type { 
-  Instance, 
-  InstanceListResponse, 
-  CreateInstanceRequest, 
+import api from "./api";
+import type {
+  Instance,
+  InstanceListResponse,
+  CreateInstanceRequest,
   UpdateInstanceRequest,
-  InstanceStatus 
-} from '../types/instance';
+  InstanceStatus,
+  InstanceRuntimeDetails,
+  InstanceConfigRevision,
+} from "../types/instance";
 
 export const instanceService = {
   // Get instance list
-  getInstances: async (page: number = 1, limit: number = 20): Promise<InstanceListResponse> => {
-    const response = await api.get('/instances', {
-      params: { page, limit }
+  getInstances: async (
+    page: number = 1,
+    limit: number = 20,
+  ): Promise<InstanceListResponse> => {
+    const response = await api.get("/instances", {
+      params: { page, limit },
     });
     return response.data.data;
   },
 
   // Create instance
   createInstance: async (data: CreateInstanceRequest): Promise<Instance> => {
-    const response = await api.post('/instances', data);
+    const response = await api.post("/instances", data);
     return response.data.data;
   },
 
   // Get instance by ID
   getInstance: async (id: number): Promise<Instance> => {
     const response = await api.get(`/instances/${id}`);
-    return response.data.data;
+    return response.data.data.instance;
   },
 
   // Update instance
-  updateInstance: async (id: number, data: UpdateInstanceRequest): Promise<void> => {
+  updateInstance: async (
+    id: number,
+    data: UpdateInstanceRequest,
+  ): Promise<void> => {
     await api.put(`/instances/${id}`, data);
   },
 
@@ -61,11 +69,60 @@ export const instanceService = {
   // Get instance status
   getInstanceStatus: async (id: number): Promise<InstanceStatus> => {
     const response = await api.get(`/instances/${id}/status`);
+    return response.data.data.instance_status;
+  },
+
+  getRuntimeDetails: async (id: number): Promise<InstanceRuntimeDetails> => {
+    const response = await api.get(`/instances/${id}/runtime`);
+    return response.data.data;
+  },
+
+  createRuntimeCommand: async (
+    id: number,
+    command:
+      | "start"
+      | "stop"
+      | "restart"
+      | "collect-system-info"
+      | "health-check",
+    idempotencyKey?: string,
+  ): Promise<void> => {
+    await api.post(
+      `/instances/${id}/runtime/${command}`,
+      idempotencyKey ? { idempotency_key: idempotencyKey } : {},
+    );
+  },
+
+  listConfigRevisions: async (
+    id: number,
+    limit: number = 20,
+  ): Promise<InstanceConfigRevision[]> => {
+    const response = await api.get(`/instances/${id}/config/revisions`, {
+      params: { limit },
+    });
+    return response.data.data;
+  },
+
+  publishConfigRevision: async (
+    id: number,
+    snapshotId: number,
+  ): Promise<{
+    revision: InstanceConfigRevision;
+    command: unknown;
+  }> => {
+    const response = await api.post(
+      `/instances/${id}/config/revisions/publish`,
+      {
+        snapshot_id: snapshotId,
+      },
+    );
     return response.data.data;
   },
 
   // Generate access token
-  generateAccessToken: async (id: number): Promise<{
+  generateAccessToken: async (
+    id: number,
+  ): Promise<{
     token: string;
     access_url: string;
     proxy_url: string;
@@ -82,18 +139,18 @@ export const instanceService = {
 
   exportOpenClawWorkspace: async (id: number): Promise<Blob> => {
     const response = await api.get(`/instances/${id}/openclaw/export`, {
-      responseType: 'blob',
+      responseType: "blob",
     });
     return response.data;
   },
 
   importOpenClawWorkspace: async (id: number, file: File): Promise<void> => {
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append("file", file);
     await api.post(`/instances/${id}/openclaw/import`, formData, {
       headers: {
-        'Content-Type': 'multipart/form-data',
+        "Content-Type": "multipart/form-data",
       },
     });
-  }
+  },
 };

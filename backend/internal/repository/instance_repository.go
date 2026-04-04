@@ -13,6 +13,9 @@ type InstanceRepository interface {
 	Create(instance *models.Instance) error
 	GetByID(id int) (*models.Instance, error)
 	GetByAccessToken(accessToken string) (*models.Instance, error)
+	GetByAgentBootstrapToken(bootstrapToken string) (*models.Instance, error)
+	GetAll(offset, limit int) ([]models.Instance, error)
+	CountAll() (int, error)
 	GetByUserID(userID int, offset, limit int) ([]models.Instance, error)
 	CountByUserID(userID int) (int, error)
 	ExistsByUserIDAndName(userID int, name string) (bool, error)
@@ -68,6 +71,35 @@ func (r *instanceRepository) GetByAccessToken(accessToken string) (*models.Insta
 		return nil, fmt.Errorf("failed to get instance by access token: %w", err)
 	}
 	return &instance, nil
+}
+
+func (r *instanceRepository) GetByAgentBootstrapToken(bootstrapToken string) (*models.Instance, error) {
+	var instance models.Instance
+	err := r.sess.Collection("instances").Find(db.Cond{"agent_bootstrap_token": bootstrapToken}).One(&instance)
+	if err != nil {
+		if err == db.ErrNoMoreRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get instance by agent bootstrap token: %w", err)
+	}
+	return &instance, nil
+}
+
+func (r *instanceRepository) GetAll(offset, limit int) ([]models.Instance, error) {
+	var instances []models.Instance
+	err := r.sess.Collection("instances").Find().Offset(offset).Limit(limit).All(&instances)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all instances: %w", err)
+	}
+	return instances, nil
+}
+
+func (r *instanceRepository) CountAll() (int, error) {
+	count, err := r.sess.Collection("instances").Find().Count()
+	if err != nil {
+		return 0, fmt.Errorf("failed to count all instances: %w", err)
+	}
+	return int(count), nil
 }
 
 // GetByUserID gets instances by user ID with pagination

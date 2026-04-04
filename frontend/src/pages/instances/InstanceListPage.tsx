@@ -10,6 +10,229 @@ import { useI18n } from '../../contexts/I18nContext';
 type ViewMode = 'list' | 'card';
 type StatusFilter = 'all' | 'running' | 'stopped' | 'creating' | 'error';
 
+const INSTANCE_FIELDS_TO_COMPARE: Array<keyof Instance> = [
+  'id',
+  'user_id',
+  'name',
+  'description',
+  'type',
+  'status',
+  'cpu_cores',
+  'memory_gb',
+  'disk_gb',
+  'gpu_enabled',
+  'gpu_count',
+  'os_type',
+  'os_version',
+  'image_registry',
+  'image_tag',
+  'storage_class',
+  'mount_path',
+  'pod_name',
+  'pod_namespace',
+  'pod_ip',
+  'access_url',
+  'openclaw_config_snapshot_id',
+  'created_at',
+  'updated_at',
+  'started_at',
+  'stopped_at',
+];
+
+const instancesEqual = (left: Instance, right: Instance) =>
+  INSTANCE_FIELDS_TO_COMPARE.every((field) => left[field] === right[field]);
+
+const mergeInstances = (current: Instance[], incoming: Instance[]) => {
+  const currentById = new Map(current.map((instance) => [instance.id, instance]));
+
+  return incoming.map((nextInstance) => {
+    const existingInstance = currentById.get(nextInstance.id);
+    return existingInstance && instancesEqual(existingInstance, nextInstance)
+      ? existingInstance
+      : nextInstance;
+  });
+};
+
+interface InstanceItemProps {
+  instance: Instance;
+  actionLoading: number | null;
+  deletingIds: number[];
+  onStart: (id: number) => void;
+  onStop: (id: number) => void;
+  onRequestDelete: (id: number) => void;
+  getStatusColor: (status: string) => string;
+  getStatusIcon: (status: string) => React.ReactNode;
+  getTypeIcon: (type: string) => string;
+  t: (key: string, options?: Record<string, string | number>) => string;
+}
+
+const InstanceCardItem = React.memo(({
+  instance,
+  actionLoading,
+  deletingIds,
+  onStart,
+  onStop,
+  onRequestDelete,
+  getStatusColor,
+  getStatusIcon,
+  getTypeIcon,
+  t,
+}: InstanceItemProps) => (
+  <div className="app-panel transition-shadow duration-200 hover:shadow-[0_30px_80px_-52px_rgba(72,44,24,0.62)]">
+    <div className="p-6">
+      <div className="flex items-start justify-between">
+        <div className="flex items-center">
+          <span className="text-2xl mr-3">{getTypeIcon(instance.type)}</span>
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">
+              {instance.name}
+            </h3>
+            <p className="text-sm text-gray-500">{instance.type}</p>
+          </div>
+        </div>
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] leading-5 font-medium ${getStatusColor(instance.status)}`}>
+          {getStatusIcon(instance.status)}
+          {t(`status.${instance.status}`)}
+        </span>
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-4 text-center">
+        <div className="bg-gray-50 rounded p-2">
+          <p className="text-xs text-gray-500">{t('common.cpu')}</p>
+          <p className="text-sm font-semibold text-gray-900">{instance.cpu_cores}</p>
+        </div>
+        <div className="bg-gray-50 rounded p-2">
+          <p className="text-xs text-gray-500">{t('common.memory')}</p>
+          <p className="text-sm font-semibold text-gray-900">{instance.memory_gb} GB</p>
+        </div>
+        <div className="bg-gray-50 rounded p-2">
+          <p className="text-xs text-gray-500">{t('common.disk')}</p>
+          <p className="text-sm font-semibold text-gray-900">{instance.disk_gb} GB</p>
+        </div>
+      </div>
+
+      {instance.description && (
+        <p className="mt-4 text-sm text-gray-600 line-clamp-2">{instance.description}</p>
+      )}
+
+      <div className="mt-4 text-xs text-gray-500">
+        {instance.os_type} {instance.os_version}
+      </div>
+    </div>
+
+    <div className="flex items-center justify-between border-t border-[#f1e7e1] bg-[rgba(255,248,245,0.82)] px-6 py-4">
+      <div className="flex space-x-2">
+        {instance.status === 'running' ? (
+          <button
+            onClick={() => onStop(instance.id)}
+            disabled={actionLoading === instance.id}
+            className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-yellow-700 bg-yellow-100 hover:bg-yellow-200 focus:outline-none disabled:opacity-50"
+          >
+            {actionLoading === instance.id ? `${t('common.stop')}...` : t('common.stop')}
+          </button>
+        ) : instance.status === 'stopped' ? (
+          <button
+            onClick={() => onStart(instance.id)}
+            disabled={actionLoading === instance.id}
+            className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none disabled:opacity-50"
+          >
+            {actionLoading === instance.id ? `${t('common.start')}...` : t('common.start')}
+          </button>
+        ) : null}
+      </div>
+      <div className="flex space-x-2">
+        <Link
+          to={`/instances/${instance.id}`}
+          className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none"
+        >
+          {t('instances.details')}
+        </Link>
+        <button
+          onClick={() => onRequestDelete(instance.id)}
+          disabled={deletingIds.includes(instance.id)}
+          className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none disabled:opacity-50"
+        >
+          {deletingIds.includes(instance.id) ? `${t('common.delete')}...` : t('common.delete')}
+        </button>
+      </div>
+    </div>
+  </div>
+));
+
+const InstanceListItem = React.memo(({
+  instance,
+  actionLoading,
+  deletingIds,
+  onStart,
+  onStop,
+  onRequestDelete,
+  getStatusColor,
+  getStatusIcon,
+  getTypeIcon,
+  t,
+}: InstanceItemProps) => (
+  <li className="px-4 py-4 hover:bg-[#fffaf6] sm:px-6">
+    <div className="flex items-center justify-between">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center">
+          <span className="text-xl mr-2">{getTypeIcon(instance.type)}</span>
+          <h3 className="text-lg font-medium text-[#dc2626] truncate">
+            {instance.name}
+          </h3>
+          <span className={`ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(instance.status)}`}>
+            {getStatusIcon(instance.status)}
+            {t(`status.${instance.status}`)}
+          </span>
+        </div>
+        <div className="mt-1 flex items-center text-sm text-gray-500">
+          <span className="mr-4">{instance.type}</span>
+          <span className="mr-4">{instance.os_type} {instance.os_version}</span>
+          <span className="mr-4">{instance.cpu_cores} {t('common.cpu')}</span>
+          <span className="mr-4">{instance.memory_gb} GB {t('common.memory')}</span>
+          <span>{instance.disk_gb} GB {t('common.disk')}</span>
+        </div>
+        {instance.description && (
+          <p className="mt-1 text-sm text-gray-500">{instance.description}</p>
+        )}
+      </div>
+      <div className="ml-4 flex items-center space-x-2">
+        {instance.status === 'running' ? (
+          <button
+            onClick={() => onStop(instance.id)}
+            disabled={actionLoading === instance.id}
+            className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-yellow-700 bg-yellow-100 hover:bg-yellow-200 focus:outline-none disabled:opacity-50"
+          >
+            {actionLoading === instance.id ? `${t('common.stop')}...` : t('common.stop')}
+          </button>
+        ) : instance.status === 'stopped' ? (
+          <button
+            onClick={() => onStart(instance.id)}
+            disabled={actionLoading === instance.id}
+            className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none disabled:opacity-50"
+          >
+            {actionLoading === instance.id ? `${t('common.start')}...` : t('common.start')}
+          </button>
+        ) : null}
+
+        <Link
+          to={`/instances/${instance.id}`}
+          className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none"
+        >
+          {t('instances.details')}
+        </Link>
+
+        <button
+          onClick={() => onRequestDelete(instance.id)}
+          disabled={deletingIds.includes(instance.id)}
+          className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none disabled:opacity-50"
+        >
+          {deletingIds.includes(instance.id) ? `${t('common.delete')}...` : t('common.delete')}
+        </button>
+      </div>
+    </div>
+  </li>
+));
+
 const InstanceListPage: React.FC = () => {
   const { t } = useI18n();
   const [instances, setInstances] = useState<Instance[]>([]);
@@ -24,9 +247,26 @@ const InstanceListPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  const loadInstances = useCallback(async (options?: { silent?: boolean }) => {
+    try {
+      if (!options?.silent) {
+        setLoading(true);
+      }
+      setError(null);
+      const data = await instanceService.getInstances();
+      setInstances((prevInstances) => mergeInstances(prevInstances, data.instances));
+    } catch (err: any) {
+      setError(err.response?.data?.error || t('instances.failedToLoad'));
+    } finally {
+      if (!options?.silent) {
+        setLoading(false);
+      }
+    }
+  }, [t]);
+
   useEffect(() => {
-    loadInstances();
-  }, []);
+    void loadInstances();
+  }, [loadInstances]);
 
   useEffect(() => {
     if (!instances.some((instance) => instance.status === 'creating')) {
@@ -34,7 +274,7 @@ const InstanceListPage: React.FC = () => {
     }
 
     const intervalId = window.setInterval(() => {
-      loadInstances();
+      void loadInstances({ silent: true });
     }, 5000);
 
     return () => {
@@ -42,30 +282,21 @@ const InstanceListPage: React.FC = () => {
     };
   }, [instances]);
 
-  const loadInstances = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await instanceService.getInstances();
-      setInstances(data.instances);
-    } catch (err: any) {
-      setError(err.response?.data?.error || t('instances.failedToLoad'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // Handle WebSocket status updates
   const handleStatusUpdate = useCallback((update: { instance_id: number; status: string; pod_name?: string; pod_ip?: string }) => {
     setInstances(prevInstances => 
       prevInstances.map(instance => 
-        instance.id === update.instance_id 
-          ? { 
-              ...instance, 
-              status: update.status as Instance['status'],
-              pod_name: update.pod_name,
-              pod_ip: update.pod_ip,
-            }
+        instance.id === update.instance_id
+          ? (() => {
+              const nextInstance = {
+                ...instance,
+                status: update.status as Instance['status'],
+                pod_name: update.pod_name,
+                pod_ip: update.pod_ip,
+              };
+
+              return instancesEqual(instance, nextInstance) ? instance : nextInstance;
+            })()
           : instance
       )
     );
@@ -95,7 +326,7 @@ const InstanceListPage: React.FC = () => {
     });
   }, [instances, statusFilter, searchQuery]);
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = useCallback(async (id: number) => {
     try {
       setDeletingIds((prevIds) => [...prevIds, id]);
       await instanceService.deleteInstance(id);
@@ -106,31 +337,35 @@ const InstanceListPage: React.FC = () => {
     } finally {
       setDeletingIds((prevIds) => prevIds.filter((deletingId) => deletingId !== id));
     }
-  };
+  }, [t]);
 
-  const handleStart = async (id: number) => {
+  const handleStart = useCallback(async (id: number) => {
     try {
       setActionLoading(id);
       await instanceService.startInstance(id);
-      await loadInstances();
+      await loadInstances({ silent: true });
     } catch (err: any) {
       alert(err.response?.data?.error || t('instances.failedToStart'));
     } finally {
       setActionLoading(null);
     }
-  };
+  }, [loadInstances, t]);
 
-  const handleStop = async (id: number) => {
+  const handleStop = useCallback(async (id: number) => {
     try {
       setActionLoading(id);
       await instanceService.stopInstance(id);
-      await loadInstances();
+      await loadInstances({ silent: true });
     } catch (err: any) {
       alert(err.response?.data?.error || t('instances.failedToStop'));
     } finally {
       setActionLoading(null);
     }
-  };
+  }, [loadInstances, t]);
+
+  const handleRequestDelete = useCallback((id: number) => {
+    setPendingDeleteId(id);
+  }, []);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -192,88 +427,19 @@ const InstanceListPage: React.FC = () => {
   const CardView = () => (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
       {filteredInstances.map((instance) => (
-        <div
+        <InstanceCardItem
           key={instance.id}
-          className="app-panel transition-shadow duration-200 hover:shadow-[0_30px_80px_-52px_rgba(72,44,24,0.62)]"
-        >
-          <div className="p-6">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center">
-                <span className="text-2xl mr-3">{getTypeIcon(instance.type)}</span>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    {instance.name}
-                  </h3>
-                  <p className="text-sm text-gray-500">{instance.type}</p>
-                </div>
-              </div>
-              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] leading-5 font-medium ${getStatusColor(instance.status)}`}>
-                {getStatusIcon(instance.status)}
-                {t(`status.${instance.status}`)}
-              </span>
-            </div>
-
-            <div className="mt-4 grid grid-cols-3 gap-4 text-center">
-              <div className="bg-gray-50 rounded p-2">
-                <p className="text-xs text-gray-500">{t('common.cpu')}</p>
-                <p className="text-sm font-semibold text-gray-900">{instance.cpu_cores}</p>
-              </div>
-              <div className="bg-gray-50 rounded p-2">
-                <p className="text-xs text-gray-500">{t('common.memory')}</p>
-                <p className="text-sm font-semibold text-gray-900">{instance.memory_gb} GB</p>
-              </div>
-              <div className="bg-gray-50 rounded p-2">
-                <p className="text-xs text-gray-500">{t('common.disk')}</p>
-                <p className="text-sm font-semibold text-gray-900">{instance.disk_gb} GB</p>
-              </div>
-            </div>
-
-            {instance.description && (
-              <p className="mt-4 text-sm text-gray-600 line-clamp-2">{instance.description}</p>
-            )}
-
-            <div className="mt-4 text-xs text-gray-500">
-              {instance.os_type} {instance.os_version}
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between border-t border-[#f1e7e1] bg-[rgba(255,248,245,0.82)] px-6 py-4">
-            <div className="flex space-x-2">
-              {instance.status === 'running' ? (
-                <button
-                  onClick={() => handleStop(instance.id)}
-                  disabled={actionLoading === instance.id}
-                  className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-yellow-700 bg-yellow-100 hover:bg-yellow-200 focus:outline-none disabled:opacity-50"
-                >
-                  {actionLoading === instance.id ? `${t('common.stop')}...` : t('common.stop')}
-                </button>
-              ) : instance.status === 'stopped' ? (
-                <button
-                  onClick={() => handleStart(instance.id)}
-                  disabled={actionLoading === instance.id}
-                  className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none disabled:opacity-50"
-                >
-                  {actionLoading === instance.id ? `${t('common.start')}...` : t('common.start')}
-                </button>
-              ) : null}
-            </div>
-            <div className="flex space-x-2">
-              <Link
-                to={`/instances/${instance.id}`}
-                className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none"
-              >
-                {t('instances.details')}
-              </Link>
-              <button
-                onClick={() => setPendingDeleteId(instance.id)}
-                disabled={deletingIds.includes(instance.id)}
-                className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none disabled:opacity-50"
-              >
-                {deletingIds.includes(instance.id) ? `${t('common.delete')}...` : t('common.delete')}
-              </button>
-            </div>
-          </div>
-        </div>
+          instance={instance}
+          actionLoading={actionLoading}
+          deletingIds={deletingIds}
+          onStart={handleStart}
+          onStop={handleStop}
+          onRequestDelete={handleRequestDelete}
+          getStatusColor={getStatusColor}
+          getStatusIcon={getStatusIcon}
+          getTypeIcon={getTypeIcon}
+          t={t}
+        />
       ))}
     </div>
   );
@@ -283,66 +449,19 @@ const InstanceListPage: React.FC = () => {
     <div className="app-panel overflow-hidden">
       <ul className="divide-y divide-[#f1e7e1]">
         {filteredInstances.map((instance) => (
-          <li key={instance.id} className="px-4 py-4 hover:bg-[#fffaf6] sm:px-6">
-            <div className="flex items-center justify-between">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center">
-                  <span className="text-xl mr-2">{getTypeIcon(instance.type)}</span>
-                  <h3 className="text-lg font-medium text-[#dc2626] truncate">
-                    {instance.name}
-                  </h3>
-                  <span className={`ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(instance.status)}`}>
-                    {getStatusIcon(instance.status)}
-                    {t(`status.${instance.status}`)}
-                  </span>
-                </div>
-                <div className="mt-1 flex items-center text-sm text-gray-500">
-                  <span className="mr-4">{instance.type}</span>
-                  <span className="mr-4">{instance.os_type} {instance.os_version}</span>
-                  <span className="mr-4">{instance.cpu_cores} {t('common.cpu')}</span>
-                  <span className="mr-4">{instance.memory_gb} GB {t('common.memory')}</span>
-                  <span>{instance.disk_gb} GB {t('common.disk')}</span>
-                </div>
-                {instance.description && (
-                  <p className="mt-1 text-sm text-gray-500">{instance.description}</p>
-                )}
-              </div>
-              <div className="ml-4 flex items-center space-x-2">
-                {instance.status === 'running' ? (
-                  <button
-                    onClick={() => handleStop(instance.id)}
-                    disabled={actionLoading === instance.id}
-                    className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-yellow-700 bg-yellow-100 hover:bg-yellow-200 focus:outline-none disabled:opacity-50"
-                  >
-                    {actionLoading === instance.id ? `${t('common.stop')}...` : t('common.stop')}
-                  </button>
-                ) : instance.status === 'stopped' ? (
-                  <button
-                    onClick={() => handleStart(instance.id)}
-                    disabled={actionLoading === instance.id}
-                    className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none disabled:opacity-50"
-                  >
-                    {actionLoading === instance.id ? `${t('common.start')}...` : t('common.start')}
-                  </button>
-                ) : null}
-
-                <Link
-                  to={`/instances/${instance.id}`}
-                  className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none"
-                >
-                  {t('instances.details')}
-                </Link>
-
-                <button
-                  onClick={() => setPendingDeleteId(instance.id)}
-                  disabled={deletingIds.includes(instance.id)}
-                  className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none disabled:opacity-50"
-                >
-                  {deletingIds.includes(instance.id) ? `${t('common.delete')}...` : t('common.delete')}
-                </button>
-              </div>
-            </div>
-          </li>
+          <InstanceListItem
+            key={instance.id}
+            instance={instance}
+            actionLoading={actionLoading}
+            deletingIds={deletingIds}
+            onStart={handleStart}
+            onStop={handleStop}
+            onRequestDelete={handleRequestDelete}
+            getStatusColor={getStatusColor}
+            getStatusIcon={getStatusIcon}
+            getTypeIcon={getTypeIcon}
+            t={t}
+          />
         ))}
       </ul>
     </div>
@@ -557,5 +676,3 @@ const InstanceListPage: React.FC = () => {
 };
 
 export default InstanceListPage;
-
-

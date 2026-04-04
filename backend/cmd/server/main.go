@@ -54,6 +54,11 @@ func main() {
 	riskRuleRepo := repository.NewRiskRuleRepository(database)
 	riskHitRepo := repository.NewRiskHitRepository(database)
 	openClawConfigRepo := repository.NewOpenClawConfigRepository(database)
+	instanceAgentRepo := repository.NewInstanceAgentRepository(database)
+	instanceRuntimeStatusRepo := repository.NewInstanceRuntimeStatusRepository(database)
+	instanceDesiredStateRepo := repository.NewInstanceDesiredStateRepository(database)
+	instanceCommandRepo := repository.NewInstanceCommandRepository(database)
+	instanceConfigRevisionRepo := repository.NewInstanceConfigRevisionRepository(database)
 
 	if repaired, repairErr := services.RepairSeededAdminPassword(userRepo); repairErr != nil {
 		log.Printf("Warning: failed to repair seeded admin password: %v", repairErr)
@@ -80,12 +85,16 @@ func main() {
 	clusterResourceService := services.NewClusterResourceService(instanceRepo)
 	services.SetRuntimeImageSettingsProvider(systemImageSettingService)
 	instanceService := services.NewInstanceService(instanceRepo, quotaRepo, llmModelRepo, openClawConfigService)
+	instanceAgentService := services.NewInstanceAgentService(instanceRepo, instanceAgentRepo, instanceDesiredStateRepo, instanceRuntimeStatusRepo, instanceCommandRepo)
+	instanceRuntimeStatusService := services.NewInstanceRuntimeStatusService(instanceRuntimeStatusRepo, instanceAgentRepo, instanceDesiredStateRepo)
+	instanceCommandService := services.NewInstanceCommandService(instanceCommandRepo, instanceRuntimeStatusRepo, instanceDesiredStateRepo)
+	instanceConfigRevisionService := services.NewInstanceConfigRevisionService(instanceConfigRevisionRepo)
 	aiGatewayService := aigateway.NewService(llmModelRepo, modelInvocationService, auditEventService, costRecordService, riskDetectionService, riskHitService, chatSessionService, chatMessageService)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
 	userHandler := handlers.NewUserHandler(userService, quotaService)
-	instanceHandler := handlers.NewInstanceHandler(instanceService)
+	instanceHandler := handlers.NewInstanceHandler(instanceService, instanceAgentService, instanceRuntimeStatusService, instanceCommandService, instanceConfigRevisionService, openClawConfigService)
 	systemSettingsHandler := handlers.NewSystemSettingsHandler(systemImageSettingService)
 	llmModelHandler := handlers.NewLLMModelHandler(llmModelService)
 	aiGatewayHandler := handlers.NewAIGatewayHandler(aiGatewayService)
@@ -94,13 +103,14 @@ func main() {
 	clusterResourceHandler := handlers.NewClusterResourceHandler(clusterResourceService)
 	egressProxyHandler := handlers.NewEgressProxyHandler()
 	openClawConfigHandler := handlers.NewOpenClawConfigHandler(openClawConfigService)
+	agentHandler := handlers.NewAgentHandler(instanceAgentService, instanceCommandService, instanceRuntimeStatusService, instanceConfigRevisionService)
 
 	// Initialize WebSocket hub and handler
 	wsHub := services.GetHub()
 	wsHandler := handlers.NewWebSocketHandler(wsHub)
 
 	// Start sync service to keep instance status in sync with K8s
-	syncService := services.NewSyncService(instanceRepo)
+	syncService := services.NewSyncService(instanceRepo, instanceRuntimeStatusService)
 	syncService.Start()
 	defer syncService.Stop()
 
@@ -164,6 +174,10 @@ func main() {
 			instances.POST("/:id/stop", instanceHandler.StopInstance)
 			instances.POST("/:id/restart", instanceHandler.RestartInstance)
 			instances.GET("/:id/status", instanceHandler.GetInstanceStatus)
+			instances.GET("/:id/runtime", instanceHandler.GetRuntimeDetails)
+			instances.POST("/:id/runtime/:command", instanceHandler.CreateRuntimeCommand)
+			instances.GET("/:id/config/revisions", instanceHandler.ListConfigRevisions)
+			instances.POST("/:id/config/revisions/publish", instanceHandler.PublishConfigRevision)
 			instances.POST("/:id/access", instanceHandler.GenerateAccessToken)
 			instances.GET("/:id/access", instanceHandler.AccessInstance)
 			instances.POST("/:id/sync", instanceHandler.ForceSync)
@@ -257,6 +271,17 @@ func main() {
 		{
 			gatewayLLM.GET("/models", aiGatewayHandler.ListModels)
 			gatewayLLM.POST("/chat/completions", aiGatewayHandler.ChatCompletions)
+		}
+
+		agent := api.Group("/agent")
+		{
+			agent.POST("/register", agentHandler.Register)
+			agent.POST("/heartbeat", agentHandler.Heartbeat)
+			agent.GET("/commands/next", agentHandler.NextCommand)
+			agent.POST("/commands/:id/start", agentHandler.StartCommand)
+			agent.POST("/commands/:id/finish", agentHandler.FinishCommand)
+			agent.POST("/state/report", agentHandler.ReportState)
+			agent.GET("/config/revisions/:id", agentHandler.GetConfigRevision)
 		}
 
 		// Instance proxy routes (token-based auth, no session required)

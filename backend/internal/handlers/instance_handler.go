@@ -17,21 +17,45 @@ import (
 
 // InstanceHandler handles instance management requests
 type InstanceHandler struct {
-	instanceService         services.InstanceService
-	accessService           *services.InstanceAccessService
-	proxyService            *services.InstanceProxyService
-	openClawTransferService services.OpenClawTransferService
+	instanceService               services.InstanceService
+	instanceAgentService          services.InstanceAgentService
+	runtimeStatusService          services.InstanceRuntimeStatusService
+	instanceCommandService        services.InstanceCommandService
+	instanceConfigRevisionService services.InstanceConfigRevisionService
+	accessService                 *services.InstanceAccessService
+	proxyService                  *services.InstanceProxyService
+	openClawTransferService       services.OpenClawTransferService
+	openClawConfigService         services.OpenClawConfigService
 }
 
 // NewInstanceHandler creates a new instance handler
-func NewInstanceHandler(instanceService services.InstanceService) *InstanceHandler {
+func NewInstanceHandler(instanceService services.InstanceService, instanceAgentService services.InstanceAgentService, runtimeStatusService services.InstanceRuntimeStatusService, instanceCommandService services.InstanceCommandService, instanceConfigRevisionService services.InstanceConfigRevisionService, openClawConfigService services.OpenClawConfigService) *InstanceHandler {
 	accessService := services.NewInstanceAccessService()
 	return &InstanceHandler{
-		instanceService:         instanceService,
-		accessService:           accessService,
-		proxyService:            services.NewInstanceProxyService(accessService),
-		openClawTransferService: services.NewOpenClawTransferService(),
+		instanceService:               instanceService,
+		instanceAgentService:          instanceAgentService,
+		runtimeStatusService:          runtimeStatusService,
+		instanceCommandService:        instanceCommandService,
+		instanceConfigRevisionService: instanceConfigRevisionService,
+		accessService:                 accessService,
+		proxyService:                  services.NewInstanceProxyService(accessService),
+		openClawTransferService:       services.NewOpenClawTransferService(),
+		openClawConfigService:         openClawConfigService,
 	}
+}
+
+type InstanceRuntimeDetailsResponse struct {
+	Runtime  *services.InstanceRuntimeStatusPayload `json:"runtime,omitempty"`
+	Agent    *services.InstanceAgentPayload         `json:"agent,omitempty"`
+	Commands []services.InstanceCommandPayload      `json:"commands,omitempty"`
+}
+
+type CreateRuntimeCommandRequest struct {
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+type PublishConfigRevisionRequest struct {
+	SnapshotID int `json:"snapshot_id" binding:"required,min=1"`
 }
 
 // CreateInstanceRequest represents a create instance request
@@ -68,6 +92,7 @@ type ListInstancesRequest struct {
 // ListInstances lists instances for the current user
 func (h *InstanceHandler) ListInstances(c *gin.Context) {
 	userID, _ := c.Get("userID")
+	userRole, _ := c.Get("userRole")
 
 	var req ListInstancesRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -78,7 +103,7 @@ func (h *InstanceHandler) ListInstances(c *gin.Context) {
 	// Calculate offset
 	offset := (req.Page - 1) * req.Limit
 
-	instances, total, err := h.instanceService.GetByUserID(userID.(int), offset, req.Limit)
+	instances, total, err := h.instanceService.GetVisibleInstances(userID.(int), fmt.Sprintf("%v", userRole), offset, req.Limit)
 	if err != nil {
 		utils.HandleError(c, err)
 		return
@@ -158,7 +183,14 @@ func (h *InstanceHandler) GetInstance(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "Instance retrieved successfully", instance)
+	runtime, _ := h.runtimeStatusService.GetByInstanceID(instance.ID)
+	agent, _ := h.instanceAgentService.GetPayloadByInstanceID(instance.ID)
+
+	utils.Success(c, http.StatusOK, "Instance retrieved successfully", gin.H{
+		"instance": instance,
+		"runtime":  runtime,
+		"agent":    agent,
+	})
 }
 
 // UpdateInstance updates an instance
@@ -392,7 +424,193 @@ func (h *InstanceHandler) GetInstanceStatus(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "Instance status retrieved successfully", status)
+	runtime, _ := h.runtimeStatusService.GetByInstanceID(id)
+	agent, _ := h.instanceAgentService.GetPayloadByInstanceID(id)
+
+	utils.Success(c, http.StatusOK, "Instance status retrieved successfully", gin.H{
+		"instance_status": status,
+		"runtime":         runtime,
+		"agent":           agent,
+	})
+}
+
+func (h *InstanceHandler) GetRuntimeDetails(c *gin.Context) {
+	id, _, ok := h.resolveOwnedInstance(c)
+	if !ok {
+		return
+	}
+
+	runtime, err := h.runtimeStatusService.GetByInstanceID(id)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	agent, err := h.instanceAgentService.GetPayloadByInstanceID(id)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	commands, err := h.instanceCommandService.ListByInstanceID(id, 20)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Instance runtime details retrieved successfully", InstanceRuntimeDetailsResponse{
+		Runtime:  runtime,
+		Agent:    agent,
+		Commands: commands,
+	})
+}
+
+func (h *InstanceHandler) CreateRuntimeCommand(c *gin.Context) {
+	id, _, ok := h.resolveOwnedInstance(c)
+	if !ok {
+		return
+	}
+
+	commandKey := strings.TrimSpace(c.Param("command"))
+	commandType := ""
+	switch commandKey {
+	case "start":
+		commandType = services.InstanceCommandTypeStartOpenClaw
+	case "stop":
+		commandType = services.InstanceCommandTypeStopOpenClaw
+	case "restart":
+		commandType = services.InstanceCommandTypeRestartOpenClaw
+	case "collect-system-info":
+		commandType = services.InstanceCommandTypeCollectSystemInfo
+	case "health-check":
+		commandType = services.InstanceCommandTypeHealthCheck
+	default:
+		utils.Error(c, http.StatusBadRequest, "Invalid runtime command")
+		return
+	}
+
+	var req CreateRuntimeCommandRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+		utils.ValidationError(c, err)
+		return
+	}
+
+	userID, _ := c.Get("userID")
+	issuedBy := userID.(int)
+	command, err := h.instanceCommandService.Create(id, &issuedBy, services.CreateInstanceCommandRequest{
+		CommandType:    commandType,
+		IdempotencyKey: req.IdempotencyKey,
+	})
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusCreated, "Instance runtime command created successfully", command)
+}
+
+func (h *InstanceHandler) ListConfigRevisions(c *gin.Context) {
+	id, _, ok := h.resolveOwnedInstance(c)
+	if !ok {
+		return
+	}
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	items, err := h.instanceConfigRevisionService.ListByInstanceID(id, limit)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Instance config revisions retrieved successfully", items)
+}
+
+func (h *InstanceHandler) PublishConfigRevision(c *gin.Context) {
+	id, instance, ok := h.resolveOwnedInstance(c)
+	if !ok {
+		return
+	}
+	if !strings.EqualFold(instance.Type, "openclaw") {
+		utils.Error(c, http.StatusBadRequest, "Only openclaw instances support config revisions")
+		return
+	}
+
+	var req PublishConfigRevisionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ValidationError(c, err)
+		return
+	}
+
+	userID, _ := c.Get("userID")
+	snapshot, err := h.openClawConfigService.GetSnapshot(userID.(int), req.SnapshotID)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	if snapshot.InstanceID != nil && *snapshot.InstanceID != id {
+		utils.Error(c, http.StatusBadRequest, "Snapshot does not belong to this instance")
+		return
+	}
+
+	modelSnapshot := &models.OpenClawInjectionSnapshot{
+		ID:                   snapshot.ID,
+		InstanceID:           snapshot.InstanceID,
+		UserID:               snapshot.UserID,
+		BundleID:             snapshot.BundleID,
+		Mode:                 snapshot.Mode,
+		RenderedManifestJSON: string(snapshot.Manifest),
+	}
+
+	issuedBy := userID.(int)
+	revision, err := h.instanceConfigRevisionService.CreateFromSnapshot(id, modelSnapshot, &issuedBy)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	command, err := h.instanceCommandService.Create(id, &issuedBy, services.CreateInstanceCommandRequest{
+		CommandType:    services.InstanceCommandTypeApplyConfigRevision,
+		IdempotencyKey: fmt.Sprintf("apply-config-revision-%d", revision.ID),
+		Payload: map[string]interface{}{
+			"revision_id": revision.ID,
+			"snapshot_id": snapshot.ID,
+		},
+		TimeoutSeconds: 300,
+	})
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusCreated, "Instance config revision published successfully", gin.H{
+		"revision": revision,
+		"command":  command,
+	})
+}
+
+func (h *InstanceHandler) resolveOwnedInstance(c *gin.Context) (int, *models.Instance, bool) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "Invalid instance ID")
+		return 0, nil, false
+	}
+
+	instance, err := h.instanceService.GetByID(id)
+	if err != nil {
+		utils.HandleError(c, err)
+		return 0, nil, false
+	}
+	if instance == nil {
+		utils.Error(c, http.StatusNotFound, "Instance not found")
+		return 0, nil, false
+	}
+
+	userID, _ := c.Get("userID")
+	userRole, _ := c.Get("userRole")
+	if userRole != "admin" && instance.UserID != userID.(int) {
+		utils.Error(c, http.StatusForbidden, "Access denied")
+		return 0, nil, false
+	}
+
+	return id, instance, true
 }
 
 // GenerateAccessToken generates an access token for an instance

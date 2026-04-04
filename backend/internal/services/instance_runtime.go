@@ -58,6 +58,7 @@ func buildRuntimeConfig(instanceType, osType, osVersion string, registry, tag *s
 			"SUBFOLDER":   "/",
 		}
 	case "openclaw":
+		config.MountPath = "/config"
 		if (registry == nil || strings.TrimSpace(*registry) == "") && (tag == nil || strings.TrimSpace(*tag) == "") {
 			config.Image = defaultSystemImageSettings["openclaw"]
 		} else {
@@ -84,7 +85,7 @@ func defaultPortForInstanceType(instanceType string) int32 {
 
 func defaultMountPathForInstanceType(instanceType string) string {
 	switch instanceType {
-	case "ubuntu", "webtop":
+	case "ubuntu", "webtop", "openclaw":
 		return "/config"
 	default:
 		return "/home/user/data"
@@ -209,6 +210,46 @@ func defaultGatewayBaseURL() (string, bool) {
 	}
 
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%s/api/v1/gateway/llm", serviceName, systemNamespace, port), true
+}
+
+func defaultAgentControlBaseURL() (string, bool) {
+	if override := strings.TrimSpace(os.Getenv("CLAWMANAGER_AGENT_CONTROL_BASE_URL")); override != "" {
+		return override, true
+	}
+
+	systemNamespace := strings.TrimSpace(os.Getenv("CLAWMANAGER_SYSTEM_NAMESPACE"))
+	if systemNamespace == "" {
+		if client := k8s.GetClient(); client != nil {
+			systemNamespace = client.GetSystemNamespace()
+		} else if baseNamespace := strings.TrimSpace(os.Getenv("K8S_NAMESPACE")); baseNamespace != "" {
+			systemNamespace = fmt.Sprintf("%s-system", baseNamespace)
+		}
+	}
+	if systemNamespace == "" {
+		return "", false
+	}
+
+	serviceName := strings.TrimSpace(os.Getenv("CLAWMANAGER_AGENT_CONTROL_SERVICE_NAME"))
+	if serviceName == "" {
+		serviceName = strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_GATEWAY_SERVICE_NAME"))
+	}
+	if serviceName == "" {
+		serviceName = strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_GATEWAY_SERVICE"))
+	}
+	if serviceName == "" {
+		serviceName = "clawmanager-gateway"
+	}
+
+	port := normalizePortValue(
+		strings.TrimSpace(os.Getenv("CLAWMANAGER_AGENT_CONTROL_SERVICE_PORT")),
+		strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_GATEWAY_SERVICE_PORT")),
+		strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_GATEWAY_PORT")),
+	)
+	if port == "" {
+		port = "9001"
+	}
+
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%s", serviceName, systemNamespace, port), true
 }
 
 func defaultNoProxyList() string {

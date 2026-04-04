@@ -1,45 +1,95 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import ConfirmDialog from '../../components/ConfirmDialog';
-import { InstanceAccess } from '../../components/InstanceAccess';
-import UserLayout from '../../components/UserLayout';
-import { instanceService } from '../../services/instanceService';
-import type { Instance, InstanceStatus } from '../../types/instance';
-import { useI18n } from '../../contexts/I18nContext';
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import ConfirmDialog from "../../components/ConfirmDialog";
+import { InstanceAccess } from "../../components/InstanceAccess";
+import { OpenClawDesktopOverlay } from "../../components/OpenClawDesktopOverlay";
+import UserLayout from "../../components/UserLayout";
+import { useI18n } from "../../contexts/I18nContext";
+import { instanceService } from "../../services/instanceService";
+import type {
+  AgentInfo,
+  Instance,
+  InstanceRuntimeCommand,
+  InstanceRuntimeDetails,
+  InstanceStatus,
+  RuntimeStatus,
+} from "../../types/instance";
 
-type TabType = 'overview' | 'access';
+const META_POLL_INTERVAL_MS = 8000;
+const RUNTIME_POLL_INTERVAL_MS = 5000;
+const RUNTIME_BURST_POLL_INTERVAL_MS = 1000;
+const RUNTIME_BURST_WINDOW_MS = 15000;
+const METRIC_WINDOW_MS = 5 * 60 * 1000;
+
+type TimelineItem = {
+  id: string;
+  title: string;
+  detail: string;
+  timestamp: number;
+  stampLabel: string;
+  tone: string;
+  section: string;
+};
+
+type MetricSample = {
+  ts: number;
+  value: number;
+};
+
+type MetricHistory = {
+  cpu: MetricSample[];
+  memory: MetricSample[];
+  disk: MetricSample[];
+  networkDown: MetricSample[];
+  networkUp: MetricSample[];
+};
+
+type MetricCurve = {
+  label: string;
+  value: string;
+  detail: string;
+  accent: string;
+  points: MetricSample[];
+  secondaryAccent?: string;
+  secondaryPoints?: MetricSample[];
+  legend?: Array<{ label: string; accent: string }>;
+  preNormalized?: boolean;
+};
 
 function statusStyle(status: string) {
   switch (status) {
-    case 'running':
+    case "running":
+    case "online":
+    case "ready":
       return {
-        shell: 'border-[#bde8ca] bg-[#edfdf2] text-[#177245]',
-        dot: 'bg-[#22c55e]',
-        soft: 'bg-[linear-gradient(180deg,#eefcf3_0%,#f9fffb_100%)] border-[#cdeed7]',
+        shell: "border-[#bde8ca] bg-[#edfdf2] text-[#177245]",
+        dot: "bg-[#22c55e]",
       };
-    case 'stopped':
+    case "stopped":
+    case "offline":
       return {
-        shell: 'border-[#d9e0e7] bg-[#f6f8fb] text-[#556070]',
-        dot: 'bg-[#94a3b8]',
-        soft: 'bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] border-[#dde3ea]',
+        shell: "border-[#d9e0e7] bg-[#f6f8fb] text-[#556070]",
+        dot: "bg-[#94a3b8]",
       };
-    case 'creating':
+    case "creating":
+    case "starting":
+    case "configuring":
+    case "pending":
       return {
-        shell: 'border-[#f6df9f] bg-[#fff8dd] text-[#9a6a00]',
-        dot: 'bg-[#eab308]',
-        soft: 'bg-[linear-gradient(180deg,#fffbed_0%,#ffffff_100%)] border-[#f3e1b7]',
+        shell: "border-[#f6df9f] bg-[#fff8dd] text-[#9a6a00]",
+        dot: "bg-[#eab308]",
       };
-    case 'error':
+    case "error":
+    case "failed":
+    case "crashed":
       return {
-        shell: 'border-[#f2c2c2] bg-[#fff0f0] text-[#b42318]',
-        dot: 'bg-[#ef4444]',
-        soft: 'bg-[linear-gradient(180deg,#fff3f3_0%,#ffffff_100%)] border-[#f2d0d0]',
+        shell: "border-[#f2c2c2] bg-[#fff0f0] text-[#b42318]",
+        dot: "bg-[#ef4444]",
       };
     default:
       return {
-        shell: 'border-[#d9e0e7] bg-[#f6f8fb] text-[#556070]',
-        dot: 'bg-[#94a3b8]',
-        soft: 'bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] border-[#dde3ea]',
+        shell: "border-[#d9e0e7] bg-[#f6f8fb] text-[#556070]",
+        dot: "bg-[#94a3b8]",
       };
   }
 }
@@ -48,52 +98,260 @@ const InstanceDetailPage: React.FC = () => {
   const { t } = useI18n();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const instanceId = id ? Number(id) : null;
+
   const [instance, setInstance] = useState<Instance | null>(null);
   const [status, setStatus] = useState<InstanceStatus | null>(null);
+  const [runtimeDetails, setRuntimeDetails] =
+    useState<InstanceRuntimeDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [metaRefreshing, setMetaRefreshing] = useState(false);
+  const [runtimeRefreshing, setRuntimeRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [runtimeBurstUntil, setRuntimeBurstUntil] = useState<number>(0);
+  const [metricSessionStartedAt, setMetricSessionStartedAt] = useState<number>(
+    () => Date.now(),
+  );
+  const [metricHistory, setMetricHistory] = useState<MetricHistory>({
+    cpu: [],
+    memory: [],
+    disk: [],
+    networkDown: [],
+    networkUp: [],
+  });
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const timelineItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const lastNetworkCounterRef = useRef<{
+    ts: number;
+    down: number | null;
+    up: number | null;
+  } | null>(null);
+
+  const fetchMeta = useCallback(
+    async (targetInstanceId: number, options?: { background?: boolean }) => {
+      const background = options?.background ?? false;
+      if (background) {
+        setMetaRefreshing(true);
+      }
+
+      try {
+        const [instanceData, statusData] = await Promise.all([
+          instanceService.getInstance(targetInstanceId),
+          instanceService.getInstanceStatus(targetInstanceId),
+        ]);
+        setInstance(instanceData);
+        setStatus(statusData);
+        setError(null);
+      } catch (err: any) {
+        if (!background) {
+          setError(err.response?.data?.error || t("instances.failedToLoad"));
+        } else {
+          console.error("Failed to refresh instance metadata", err);
+        }
+      } finally {
+        if (background) {
+          setMetaRefreshing(false);
+        }
+      }
+    },
+    [t],
+  );
+
+  const fetchRuntime = useCallback(
+    async (targetInstanceId: number, options?: { background?: boolean }) => {
+      const background = options?.background ?? false;
+      if (background) {
+        setRuntimeRefreshing(true);
+      }
+
+      try {
+        const runtimeData =
+          await instanceService.getRuntimeDetails(targetInstanceId);
+        setRuntimeDetails(runtimeData);
+        setError(null);
+      } catch (err: any) {
+        if (!background) {
+          setError(err.response?.data?.error || t("instances.failedToLoad"));
+        } else {
+          console.error("Failed to refresh runtime details", err);
+        }
+      } finally {
+        if (background) {
+          setRuntimeRefreshing(false);
+        }
+      }
+    },
+    [t],
+  );
+
+  const runtimePollInterval =
+    runtimeBurstUntil > Date.now()
+      ? RUNTIME_BURST_POLL_INTERVAL_MS
+      : RUNTIME_POLL_INTERVAL_MS;
 
   useEffect(() => {
-    if (id) {
-      loadInstance(parseInt(id));
-    }
-  }, [id]);
+    setMetricSessionStartedAt(Date.now());
+    setMetricHistory({
+      cpu: [],
+      memory: [],
+      disk: [],
+      networkDown: [],
+      networkUp: [],
+    });
+    lastNetworkCounterRef.current = null;
+  }, [instanceId]);
 
   useEffect(() => {
-    if (!id || instance?.status !== 'creating') {
+    if (!instanceId || Number.isNaN(instanceId)) {
+      setError(t("instances.instanceNotFound"));
+      setLoading(false);
       return;
     }
 
-    const instanceId = parseInt(id);
-    const intervalId = window.setInterval(() => {
-      loadInstance(instanceId);
-    }, 5000);
+    let disposed = false;
+
+    const hydrate = async () => {
+      setLoading(true);
+      try {
+        const [instanceData, statusData, runtimeData] = await Promise.all([
+          instanceService.getInstance(instanceId),
+          instanceService.getInstanceStatus(instanceId),
+          instanceService.getRuntimeDetails(instanceId),
+        ]);
+        if (disposed) {
+          return;
+        }
+        setInstance(instanceData);
+        setStatus(statusData);
+        setRuntimeDetails(runtimeData);
+        setError(null);
+      } catch (err: any) {
+        if (disposed) {
+          return;
+        }
+        setError(err.response?.data?.error || t("instances.failedToLoad"));
+      } finally {
+        if (!disposed) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void hydrate();
 
     return () => {
-      window.clearInterval(intervalId);
+      disposed = true;
     };
-  }, [id, instance?.status]);
+  }, [instanceId, t]);
 
-  const loadInstance = async (instanceId: number) => {
-    try {
-      setLoading(true);
-      setError(null);
-      const [instanceData, statusData] = await Promise.all([
-        instanceService.getInstance(instanceId),
-        instanceService.getInstanceStatus(instanceId)
-      ]);
-      setInstance(instanceData);
-      setStatus(statusData);
-    } catch (err: any) {
-      setError(err.response?.data?.error || t('instances.failedToLoad'));
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!instanceId || Number.isNaN(instanceId)) {
+      return;
     }
-  };
+
+    const metaTimer = window.setInterval(() => {
+      if (document.hidden) {
+        return;
+      }
+      void fetchMeta(instanceId, { background: true });
+    }, META_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(metaTimer);
+    };
+  }, [fetchMeta, instanceId]);
+
+  useEffect(() => {
+    if (!instanceId || Number.isNaN(instanceId)) {
+      return;
+    }
+
+    const runtimeTimer = window.setInterval(() => {
+      if (document.hidden) {
+        return;
+      }
+      void fetchRuntime(instanceId, { background: true });
+    }, runtimePollInterval);
+
+    return () => {
+      window.clearInterval(runtimeTimer);
+    };
+  }, [fetchRuntime, instanceId, runtimePollInterval]);
+
+  useEffect(() => {
+    if (runtimeBurstUntil <= Date.now()) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setRuntimeBurstUntil(0);
+    }, runtimeBurstUntil - Date.now());
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [runtimeBurstUntil]);
+
+  useEffect(() => {
+    const snapshot = extractMetricSnapshot(runtimeDetails?.runtime?.system_info);
+    if (!snapshot) {
+      return;
+    }
+
+    const ts = Date.now();
+    const previousNetwork = lastNetworkCounterRef.current;
+    let networkDownSample: number | null = null;
+    let networkUpSample: number | null = null;
+
+    if (
+      previousNetwork &&
+      snapshot.networkDownTotal !== null &&
+      snapshot.networkUpTotal !== null
+    ) {
+      const elapsedSeconds = Math.max((ts - previousNetwork.ts) / 1000, 1);
+      if (
+        previousNetwork.down !== null &&
+        snapshot.networkDownTotal >= previousNetwork.down
+      ) {
+        networkDownSample =
+          (snapshot.networkDownTotal - previousNetwork.down) / elapsedSeconds;
+      }
+      if (
+        previousNetwork.up !== null &&
+        snapshot.networkUpTotal >= previousNetwork.up
+      ) {
+        networkUpSample =
+          (snapshot.networkUpTotal - previousNetwork.up) / elapsedSeconds;
+      }
+    }
+
+    lastNetworkCounterRef.current = {
+      ts,
+      down: snapshot.networkDownTotal,
+      up: snapshot.networkUpTotal,
+    };
+
+    setMetricHistory((current) => ({
+      cpu: appendMetricSample(current.cpu, snapshot.cpuPercent, ts),
+      memory: appendMetricSample(current.memory, snapshot.memoryPercent, ts),
+      disk: appendMetricSample(current.disk, snapshot.diskPercent, ts),
+      networkDown: appendMetricSample(current.networkDown, networkDownSample, ts),
+      networkUp: appendMetricSample(current.networkUp, networkUpSample, ts),
+    }));
+  }, [runtimeDetails]);
+
+  const refreshAll = useCallback(async () => {
+    if (!instanceId) {
+      return;
+    }
+    await Promise.all([
+      fetchMeta(instanceId, { background: true }),
+      fetchRuntime(instanceId, { background: true }),
+    ]);
+  }, [fetchMeta, fetchRuntime, instanceId]);
 
   const handleAction = async (action: string) => {
     if (!instance) return;
@@ -101,24 +359,65 @@ const InstanceDetailPage: React.FC = () => {
     try {
       setActionLoading(action);
       switch (action) {
-        case 'start':
+        case "start":
           await instanceService.startInstance(instance.id);
           break;
-        case 'stop':
+        case "stop":
           await instanceService.stopInstance(instance.id);
           break;
-        case 'restart':
+        case "restart":
           await instanceService.restartInstance(instance.id);
           break;
-        case 'delete':
+        case "delete":
           await instanceService.deleteInstance(instance.id);
           setShowDeleteDialog(false);
-          navigate('/instances');
+          navigate("/instances");
+          return;
+        default:
           return;
       }
-      await loadInstance(instance.id);
+      await refreshAll();
     } catch (err: any) {
-      alert(err.response?.data?.error || t(`instances.failedTo${action.charAt(0).toUpperCase()}${action.slice(1)}`));
+      alert(
+        err.response?.data?.error ||
+          t(
+            `instances.failedTo${action.charAt(0).toUpperCase()}${action.slice(1)}`,
+          ),
+      );
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRuntimeCommand = async (
+    command:
+      | "start"
+      | "stop"
+      | "restart"
+      | "collect-system-info"
+      | "health-check",
+  ) => {
+    if (!instance) return;
+
+    try {
+      setActionLoading(`runtime-${command}`);
+      setRuntimeBurstUntil(Date.now() + RUNTIME_BURST_WINDOW_MS);
+      await instanceService.createRuntimeCommand(instance.id, command);
+      await fetchRuntime(instance.id, { background: true });
+      window.setTimeout(() => {
+        void fetchRuntime(instance.id, { background: true });
+      }, 800);
+      window.setTimeout(() => {
+        void fetchRuntime(instance.id, { background: true });
+      }, 2000);
+      window.setTimeout(() => {
+        void fetchRuntime(instance.id, { background: true });
+      }, 5000);
+    } catch (err: any) {
+      alert(
+        err.response?.data?.error ||
+          `Failed to queue runtime command: ${command}`,
+      );
     } finally {
       setActionLoading(null);
     }
@@ -128,18 +427,18 @@ const InstanceDetailPage: React.FC = () => {
     if (!instance) return;
 
     try {
-      setActionLoading('export-openclaw');
+      setActionLoading("export-openclaw");
       const blob = await instanceService.exportOpenClawWorkspace(instance.id);
       const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
+      const link = document.createElement("a");
       link.href = url;
-      link.download = `${instance.name || 'openclaw-workspace'}.openclaw.tar.gz`;
+      link.download = `${instance.name || "openclaw-workspace"}.openclaw.tar.gz`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert(err.response?.data?.error || t('instances.exportOpenClaw'));
+      alert(err.response?.data?.error || t("instances.exportOpenClaw"));
     } finally {
       setActionLoading(null);
     }
@@ -149,14 +448,15 @@ const InstanceDetailPage: React.FC = () => {
     if (!instance || !file) return;
 
     try {
-      setActionLoading('import-openclaw');
+      setActionLoading("import-openclaw");
       await instanceService.importOpenClawWorkspace(instance.id, file);
-      alert(t('instances.importOpenClaw'));
+      await fetchRuntime(instance.id, { background: true });
+      alert(t("instances.importOpenClaw"));
     } catch (err: any) {
-      alert(err.response?.data?.error || t('instances.importOpenClaw'));
+      alert(err.response?.data?.error || t("instances.importOpenClaw"));
     } finally {
       if (importInputRef.current) {
-        importInputRef.current.value = '';
+        importInputRef.current.value = "";
       }
       setActionLoading(null);
     }
@@ -166,7 +466,9 @@ const InstanceDetailPage: React.FC = () => {
     return (
       <UserLayout>
         <div className="flex min-h-[60vh] items-center justify-center">
-          <div className="text-lg text-gray-600">{t('instances.loadingInstance')}</div>
+          <div className="text-lg text-gray-600">
+            {t("instances.loadingInstance")}
+          </div>
         </div>
       </UserLayout>
     );
@@ -177,12 +479,14 @@ const InstanceDetailPage: React.FC = () => {
       <UserLayout>
         <div className="flex min-h-[60vh] items-center justify-center">
           <div className="text-center">
-            <p className="mb-4 text-red-600">{error || t('instances.instanceNotFound')}</p>
+            <p className="mb-4 text-red-600">
+              {error || t("instances.instanceNotFound")}
+            </p>
             <button
-              onClick={() => navigate('/instances')}
+              onClick={() => navigate("/instances")}
               className="text-indigo-600 hover:text-indigo-800"
             >
-              {t('instances.backToInstances')}
+              {t("instances.backToInstances")}
             </button>
           </div>
         </div>
@@ -190,376 +494,1516 @@ const InstanceDetailPage: React.FC = () => {
     );
   }
 
-  const currentStatusStyle = statusStyle(instance.status);
-  const timelineItems = [
-    {
-      label: t('instances.created'),
-      value: new Date(instance.created_at).toLocaleString(),
-      dot: 'bg-[#6366f1]',
-    },
-    instance.started_at ? {
-      label: t('instances.lastStarted'),
-      value: new Date(instance.started_at).toLocaleString(),
-      dot: 'bg-[#22c55e]',
-    } : null,
-    instance.stopped_at ? {
-      label: t('instances.lastStopped'),
-      value: new Date(instance.stopped_at).toLocaleString(),
-      dot: 'bg-[#94a3b8]',
-    } : null,
-  ].filter(Boolean) as Array<{ label: string; value: string; dot: string }>;
+  const runtime = runtimeDetails?.runtime;
+  const agent = runtimeDetails?.agent;
+  const commands = runtimeDetails?.commands ?? [];
+  const effectiveInstanceStatus = status?.status || instance.status;
+  const systemInfo = asRecord(runtime?.system_info);
+  const runtimeSummary = asRecord(runtime?.summary);
+  const cpuInfo = asRecord(systemInfo?.cpu);
+  const memoryInfo = asRecord(systemInfo?.memory);
+  const diskInfo = asRecord(systemInfo?.disk);
+  const networkInfo = asRecord(systemInfo?.network);
+  const osInfo = asRecord(systemInfo?.os);
+  const openclawStats = asRecord(runtimeSummary?.openclaw_stats);
+  const runtimeStats = asRecord(runtimeSummary?.stats);
+  const skillCount = firstNumber(
+    openclawStats?.skill_count,
+    openclawStats?.skills_count,
+    runtimeStats?.skill_count,
+    runtimeStats?.skills_count,
+    runtimeSummary?.skill_count,
+    runtimeSummary?.skills_count,
+  );
+  const agentCount = firstNumber(
+    openclawStats?.agent_count,
+    openclawStats?.agents_count,
+    runtimeStats?.agent_count,
+    runtimeStats?.agents_count,
+    runtimeSummary?.agent_count,
+    runtimeSummary?.agents_count,
+  );
+  const channelCount = firstNumber(
+    openclawStats?.channel_count,
+    openclawStats?.channels_count,
+    runtimeStats?.channel_count,
+    runtimeStats?.channels_count,
+    runtimeSummary?.channel_count,
+    runtimeSummary?.channels_count,
+  );
+  const currentStatusStyle = statusStyle(effectiveInstanceStatus);
+  const gatewayStatus = runtime?.openclaw_status || "unknown";
+  const metricCurves = buildMetricCurves({
+    cpuInfo,
+    memoryInfo,
+    diskInfo,
+    networkInfo,
+    metricHistory,
+    sessionStartedAt: metricSessionStartedAt,
+  });
+  const timelineItems = buildTimelineItems(
+    instance,
+    status,
+    runtime,
+    agent,
+    commands,
+  );
+
+  const canControlGateway = effectiveInstanceStatus === "running";
 
   return (
     <UserLayout>
       <ConfirmDialog
         open={showDeleteDialog}
-        title={t('common.delete')}
-        message={t('instances.confirmDelete')}
-        confirmLabel={t('common.delete')}
-        cancelLabel={t('common.cancel')}
+        title={t("common.delete")}
+        message={t("instances.confirmDelete")}
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
         destructive
-        loading={actionLoading === 'delete'}
+        loading={actionLoading === "delete"}
         onCancel={() => setShowDeleteDialog(false)}
-        onConfirm={() => handleAction('delete')}
+        onConfirm={() => handleAction("delete")}
       />
 
       <div className="space-y-6">
-        <section className="app-panel px-5 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center">
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">{instance.name}</h1>
-                <div className="mt-1 flex items-center">
-                  <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${currentStatusStyle.shell}`}>
-                    <span className={`mr-2 h-2 w-2 rounded-full ${currentStatusStyle.dot}`} />
-                    {t(`status.${instance.status}`)}
-                  </span>
-                  <span className="ml-3 text-sm text-gray-500">{t('instances.instanceIdLabel')}: {instance.id}</span>
-                </div>
+        <section className="app-panel overflow-hidden px-5 py-5">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-3">
+                <span
+                  className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${currentStatusStyle.shell}`}
+                >
+                  <span
+                    className={`mr-2 h-2 w-2 rounded-full ${currentStatusStyle.dot}`}
+                  />
+                  {t(`status.${effectiveInstanceStatus}`)}
+                </span>
+                <span className="rounded-full border border-[#ead8cf] bg-[#fffaf7] px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-[#8f776b]">
+                  {instance.type}
+                </span>
+                <span className="text-sm text-[#7a6d66]">
+                  {t("instances.instanceIdLabel")}: {instance.id}
+                </span>
               </div>
+              <h1 className="mt-4 text-[2.2rem] font-semibold leading-none tracking-[-0.05em] text-[#1d1713]">
+                {instance.name}
+              </h1>
+              {instance.description && (
+                <p className="mt-3 max-w-3xl text-sm leading-6 text-[#7a6d66]">
+                  {instance.description}
+                </p>
+              )}
             </div>
-            <div className="flex space-x-2">
-              {instance.status === 'running' ? (
+
+            <div className="flex flex-wrap items-center gap-2">
+              <RefreshState
+                active={metaRefreshing || runtimeRefreshing}
+                label="Live"
+              />
+              {effectiveInstanceStatus === "running" ? (
                 <button
-                  onClick={() => handleAction('stop')}
-                  disabled={actionLoading === 'stop'}
+                  onClick={() => handleAction("stop")}
+                  disabled={actionLoading === "stop"}
                   className="rounded-2xl border border-transparent bg-yellow-100 px-4 py-2 text-sm font-medium text-yellow-700 hover:bg-yellow-200 disabled:opacity-50"
                 >
-                  {actionLoading === 'stop' ? `${t('common.stop')}...` : t('common.stop')}
+                  {actionLoading === "stop"
+                    ? `${t("common.stop")}...`
+                    : t("common.stop")}
                 </button>
-              ) : instance.status === 'stopped' && (
+              ) : effectiveInstanceStatus === "stopped" ? (
                 <button
-                  onClick={() => handleAction('start')}
-                  disabled={actionLoading === 'start'}
+                  onClick={() => handleAction("start")}
+                  disabled={actionLoading === "start"}
                   className="rounded-2xl border border-transparent bg-green-100 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-200 disabled:opacity-50"
                 >
-                  {actionLoading === 'start' ? `${t('common.start')}...` : t('common.start')}
+                  {actionLoading === "start"
+                    ? `${t("common.start")}...`
+                    : t("common.start")}
                 </button>
-              )}
-
+              ) : null}
               <button
-                onClick={() => handleAction('restart')}
-                disabled={actionLoading === 'restart'}
+                onClick={() => handleAction("restart")}
+                disabled={actionLoading === "restart"}
                 className="app-button-secondary disabled:opacity-50"
               >
-                {actionLoading === 'restart' ? `${t('common.restart')}...` : t('common.restart')}
+                {actionLoading === "restart"
+                  ? `${t("common.restart")}...`
+                  : t("common.restart")}
               </button>
-
               <button
                 onClick={() => setShowDeleteDialog(true)}
-                disabled={actionLoading === 'delete'}
+                disabled={actionLoading === "delete"}
                 className="rounded-2xl border border-transparent bg-red-100 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-200 disabled:opacity-50"
               >
-                {actionLoading === 'delete' ? `${t('common.delete')}...` : t('common.delete')}
+                {actionLoading === "delete"
+                  ? `${t("common.delete")}...`
+                  : t("common.delete")}
               </button>
             </div>
           </div>
         </section>
 
-        {/* Tabs */}
-        <div className="mb-6 border-b border-[#eadfd8]">
-          <nav className="-mb-px flex space-x-8">
-            <button
-              onClick={() => setActiveTab('overview')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
-                activeTab === 'overview'
-                  ? 'border-indigo-500 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              {t('common.overview')}
-            </button>
-            <button
-              onClick={() => setActiveTab('access')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
-                activeTab === 'access'
-                  ? 'border-indigo-500 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              {t('instances.desktopAccess')}
-            </button>
-          </nav>
-        </div>
-
-        {/* Tab Content */}
-        {activeTab === 'access' && (
-          <div className="mb-6">
-            <InstanceAccess
-              instanceId={instance.id}
-              instanceName={instance.name}
-              isRunning={instance.status === 'running'}
-            />
-          </div>
-        )}
-
-        {activeTab === 'overview' && (
-        <div className="space-y-6">
-          <section className="app-panel-warm relative overflow-hidden px-6 py-6 sm:px-7">
-            <div className="pointer-events-none absolute left-0 top-0 h-40 w-40 rounded-full bg-[radial-gradient(circle,rgba(239,107,74,0.14),transparent_68%)] blur-2xl" />
-            <div className="pointer-events-none absolute bottom-0 right-0 h-32 w-32 rounded-full bg-[radial-gradient(circle,rgba(59,130,246,0.12),transparent_70%)] blur-2xl" />
-            <div className="relative grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
-              <div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] ${currentStatusStyle.shell}`}>
-                    <span className={`mr-2 h-2 w-2 rounded-full ${currentStatusStyle.dot}`} />
-                    {instance.status}
-                  </span>
-                  <span className="rounded-full border border-[#ead8cf] bg-white/75 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-[#8f776b]">
-                    {instance.type}
-                  </span>
-                  <span className="text-sm text-[#8b7a70]">Instance ID {instance.id}</span>
-                </div>
-
-                <div className="mt-5 max-w-3xl">
-                  <h2 className="text-[2rem] font-semibold leading-[1.02] tracking-[-0.045em] text-[#1d1713] sm:text-[2.4rem]">
-                    {instance.os_type} {instance.os_version}
-                  </h2>
-                </div>
-
-                <div className="mt-5 grid gap-4 sm:grid-cols-3">
-                  <MetricTile label={t('instances.cpuCores')} value={`${instance.cpu_cores}`} hint={t('instances.allocatedCompute')} />
-                  <MetricTile label={t('common.memory')} value={`${instance.memory_gb} GB`} hint={t('instances.reservedRam')} />
-                  <MetricTile label={t('common.disk')} value={`${instance.disk_gb} GB`} hint={t('instances.persistentDisk')} />
-                </div>
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.48fr)_470px] 2xl:grid-cols-[minmax(0,1.55fr)_520px]">
+          <div className="space-y-6">
+            <section className="overflow-hidden rounded-[34px] border border-[#ead8cf] bg-[linear-gradient(180deg,#fbf5ef_0%,#f6ece4_100%)] p-3 shadow-[0_34px_90px_-62px_rgba(72,44,24,0.5)]">
+              <div className="relative">
+                <InstanceAccess
+                  instanceId={instance.id}
+                  instanceName={instance.name}
+                  isRunning={effectiveInstanceStatus === "running"}
+                />
+                <OpenClawDesktopOverlay
+                  gatewayStatus={gatewayStatus}
+                  canControl={canControlGateway}
+                  actionLoading={actionLoading}
+                  onCommand={handleRuntimeCommand}
+                />
               </div>
+            </section>
 
-              <aside className="space-y-4">
-                <div className={`rounded-[28px] border p-5 shadow-[0_24px_70px_-50px_rgba(72,44,24,0.42)] ${currentStatusStyle.soft}`}>
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#b46c50]">{t('instances.access')}</p>
-                      <h3 className="mt-2 text-[1.6rem] font-semibold leading-none tracking-[-0.04em] text-[#1d1713]">
-                        {instance.status === 'running' ? t('instances.openDesktop') : t('instances.startToAccess')}
-                      </h3>
-                    </div>
-                    <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${currentStatusStyle.shell}`}>
-                      <span className={`mr-2 h-2 w-2 rounded-full ${currentStatusStyle.dot}`} />
-                      {t(`status.${instance.status}`)}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('access')}
-                    className={`mt-5 flex w-full items-center justify-between rounded-[22px] border px-5 py-4 text-left transition-all ${
-                      instance.status === 'running'
-                        ? 'border-[#bde8ca] bg-white/88 text-[#166534] hover:-translate-y-0.5 hover:shadow-[0_18px_36px_-28px_rgba(34,197,94,0.45)]'
-                        : 'border-[#e6ded7] bg-white/82 text-[#5f5a57] hover:border-[#ef6b4a] hover:text-[#1d1713]'
-                    }`}
-                  >
-                    <div>
-                      <p className="text-base font-semibold">{t('instances.desktopAccess')}</p>
-                      <p className="mt-1 text-sm text-[#7a6d66]">
-                        {instance.status === 'running' ? t('instances.launchLiveSession') : t('instances.desktopAvailableAfterStart')}
-                      </p>
-                    </div>
-                    <svg className="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                    </svg>
-                  </button>
-                </div>
-
-                <div className="app-panel px-5 py-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">{t('instances.timeline')}</p>
-                  <div className="mt-4 space-y-4">
-                    {timelineItems.map((item) => (
-                      <div key={item.label} className="flex items-start gap-3">
-                        <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${item.dot}`} />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-[#1d1713]">{item.label}</p>
-                          <p className="mt-1 text-sm text-[#7a6d66]">{item.value}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </aside>
-            </div>
-          </section>
-
-          <div className="grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
-            <div className="space-y-6">
-              <section className="app-panel p-6">
-                <div className="flex items-end justify-between gap-4">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">{t('instances.instanceDossier')}</p>
-                    <h2 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[#1d1713]">{t('instances.basicInformation')}</h2>
-                  </div>
-                </div>
-                <dl className="mt-6 grid gap-x-6 gap-y-5 sm:grid-cols-2">
-                  <DetailItem label={t('common.type')} value={instance.type} />
-                  <DetailItem label={t('instances.instanceImage')} value={instance.image_registry ? `${instance.image_registry}${instance.image_tag ? `:${instance.image_tag}` : ''}` : `${instance.os_type} ${instance.os_version}`} />
-                  <DetailItem label={t('common.createdAt')} value={new Date(instance.created_at).toLocaleString()} />
-                  <DetailItem label={t('common.lastUpdated')} value={new Date(instance.updated_at).toLocaleString()} />
-                  {instance.description && (
-                    <div className="sm:col-span-2">
-                      <DetailItem label={t('common.description')} value={instance.description} />
-                    </div>
-                  )}
-                </dl>
-              </section>
-
-              <section className="app-panel p-6">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">{t('instances.resourceConfiguration')}</p>
-                <h2 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[#1d1713]">{t('instances.allocatedProfile')}</h2>
-                <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  <ResourceStatCard value={`${instance.cpu_cores}`} label={t('instances.cpuCores')} tone="coral" />
-                  <ResourceStatCard value={`${instance.memory_gb} GB`} label={t('instances.memoryReserved')} tone="blue" />
-                  <ResourceStatCard value={`${instance.disk_gb} GB`} label={t('instances.persistentStorage')} tone="amber" />
-                  <ResourceStatCard value={`${instance.gpu_enabled ? instance.gpu_count : 0}`} label={t('instances.gpuAttached')} tone="slate" />
-                </div>
-              </section>
-
-              {status && (
-                <section className="app-panel p-6">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">{t('instances.kubernetesSection')}</p>
-                  <h2 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[#1d1713]">{t('instances.kubernetesStatus')}</h2>
-                  <dl className="mt-6 grid gap-x-6 gap-y-5 sm:grid-cols-2">
-                    {status.pod_name && <DetailItem label={t('instances.podName')} value={status.pod_name} />}
-                    {status.pod_namespace && <DetailItem label={t('instances.namespace')} value={status.pod_namespace} />}
-                    {status.pod_ip && <DetailItem label={t('instances.podIp')} value={status.pod_ip} />}
-                    {status.pod_status && <DetailItem label={t('instances.podStatus')} value={status.pod_status} />}
-                  </dl>
-                </section>
-              )}
-            </div>
-
-            <aside className="space-y-6">
-              <section className="app-panel p-6">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">{t('instances.storage')}</p>
-                <h2 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[#1d1713]">{t('instances.volumeMapping')}</h2>
-                <div className="mt-5 space-y-4">
-                  <StorageRow label={t('instances.storageClass')} value={instance.storage_class || t('instances.defaultStorageClass')} />
-                  <StorageRow label={t('instances.mountPath')} value={instance.mount_path} mono />
-                </div>
-              </section>
-
-              {instance.type === 'openclaw' && (
-                <section className="app-panel p-6">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">{t('instances.workspaceSection')}</p>
-                      <h2 className="mt-2 text-[1.45rem] font-semibold tracking-[-0.03em] text-[#1d1713]">{t('instances.openClawWorkspace')}</h2>
-                      <p className="mt-2 text-sm leading-6 text-[#7a6d66]">
-                        {t('instances.openClawWorkspaceDesc')}
-                      </p>
-                    </div>
-                    <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${currentStatusStyle.shell}`}>
-                      <span className={`mr-2 h-2 w-2 rounded-full ${currentStatusStyle.dot}`} />
-                      {instance.status === 'running' ? t('instances.workspaceReady') : t('instances.workspacePaused')}
-                    </span>
+            {instance.type === "openclaw" && (
+              <section className="app-panel px-5 py-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="max-w-xl">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">
+                      Workspace
+                    </p>
+                    <h2 className="mt-2 text-[1.35rem] font-semibold tracking-[-0.03em] text-[#1d1713]">
+                      OpenClaw import and export
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-[#7a6d66]">
+                      Move the current workspace in or out without leaving this
+                      page.
+                    </p>
                   </div>
 
-                  <div className="mt-5 grid gap-3">
+                  <div className="grid w-full gap-3 lg:max-w-[320px]">
                     <button
                       type="button"
                       onClick={handleExportOpenClaw}
-                      disabled={instance.status !== 'running' || actionLoading === 'export-openclaw' || actionLoading === 'import-openclaw'}
+                      disabled={
+                        effectiveInstanceStatus !== "running" ||
+                        actionLoading === "export-openclaw" ||
+                        actionLoading === "import-openclaw"
+                      }
                       className="app-button-primary disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {actionLoading === 'export-openclaw' ? t('instances.exportingOpenClaw') : t('instances.exportOpenClaw')}
+                      {actionLoading === "export-openclaw"
+                        ? t("instances.exportingOpenClaw")
+                        : t("instances.exportOpenClaw")}
                     </button>
                     <input
                       ref={importInputRef}
                       type="file"
                       accept=".tar.gz,.tgz,application/gzip,application/x-gzip,application/octet-stream"
                       className="hidden"
-                      onChange={(e) => handleImportOpenClaw(e.target.files?.[0] || null)}
+                      onChange={(e) =>
+                        handleImportOpenClaw(e.target.files?.[0] || null)
+                      }
                     />
                     <button
                       type="button"
                       onClick={() => importInputRef.current?.click()}
-                      disabled={instance.status !== 'running' || actionLoading === 'export-openclaw' || actionLoading === 'import-openclaw'}
+                      disabled={
+                        effectiveInstanceStatus !== "running" ||
+                        actionLoading === "export-openclaw" ||
+                        actionLoading === "import-openclaw"
+                      }
                       className="app-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {actionLoading === 'import-openclaw' ? t('instances.importingOpenClaw') : t('instances.importOpenClaw')}
+                      {actionLoading === "import-openclaw"
+                        ? t("instances.importingOpenClaw")
+                        : t("instances.importOpenClaw")}
                     </button>
                   </div>
-                </section>
-              )}
-            </aside>
+                </div>
+              </section>
+            )}
+
+            <section className="app-panel px-6 py-6">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">
+                    Kubernetes
+                  </p>
+                  <h2 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[#1d1713]">
+                    Pod and infrastructure status
+                  </h2>
+                </div>
+                <RefreshState active={metaRefreshing} label="Infra ready" />
+              </div>
+
+              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <DetailCard
+                  label={t("instances.podName")}
+                  value={status?.pod_name || instance.pod_name || "N/A"}
+                />
+                <DetailCard
+                  label={t("instances.namespace")}
+                  value={
+                    status?.pod_namespace || instance.pod_namespace || "N/A"
+                  }
+                />
+                <DetailCard
+                  label={t("instances.podStatus")}
+                  value={status?.pod_status || status?.status || "N/A"}
+                />
+                <DetailCard
+                  label={t("instances.podIp")}
+                  value={status?.pod_ip || instance.pod_ip || "N/A"}
+                />
+                <DetailCard label={t("common.type")} value={instance.type} />
+                <DetailCard
+                  label={t("instances.instanceImage")}
+                  value={
+                    instance.image_registry
+                      ? `${instance.image_registry}${instance.image_tag ? `:${instance.image_tag}` : ""}`
+                      : `${instance.os_type} ${instance.os_version}`
+                  }
+                />
+                <DetailCard
+                  label={t("instances.storageClass")}
+                  value={
+                    instance.storage_class || t("instances.defaultStorageClass")
+                  }
+                />
+                <DetailCard
+                  label={t("instances.mountPath")}
+                  value={instance.mount_path}
+                  mono
+                />
+              </div>
+            </section>
+
+            <section className="app-panel px-6 py-6">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">
+                    Timeline
+                  </p>
+                  <h2 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[#1d1713]">
+                    Instance operations and runtime history
+                  </h2>
+                </div>
+                <RefreshState
+                  active={runtimeRefreshing}
+                  label={`${timelineItems.length} events`}
+                />
+              </div>
+
+              <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_86px]">
+                <div
+                  ref={timelineScrollRef}
+                  className="max-h-[560px] overflow-y-auto pr-2"
+                >
+                  <div className="space-y-4">
+                    {timelineItems.length === 0 ? (
+                      <div className="rounded-[24px] border border-dashed border-[#e7d9d1] bg-[#fffaf7] px-5 py-8 text-sm text-[#7a6d66]">
+                        No runtime activity yet.
+                      </div>
+                    ) : (
+                      timelineItems.map((item) => (
+                        <div
+                          key={item.id}
+                          ref={(node) => {
+                            timelineItemRefs.current[item.id] = node;
+                          }}
+                          className="rounded-[26px] border border-[#efe2d8] bg-[#fffaf7] px-5 py-5 shadow-[0_20px_40px_-36px_rgba(72,44,24,0.42)]"
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span
+                                  className={`h-2.5 w-2.5 rounded-full ${item.tone}`}
+                                />
+                                <p className="text-base font-semibold text-[#1d1713]">
+                                  {item.title}
+                                </p>
+                                <span className="rounded-full border border-[#ead8cf] bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8f776b]">
+                                  {item.section}
+                                </span>
+                              </div>
+                              <p className="mt-2 text-sm leading-6 text-[#6f6158]">
+                                {item.detail}
+                              </p>
+                            </div>
+                            <p className="shrink-0 text-xs font-medium uppercase tracking-[0.14em] text-[#9d8a80]">
+                              {item.stampLabel}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-[#efe2d8] bg-[#fffaf7] px-3 py-4">
+                  <p className="text-center text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">
+                    Minimap
+                  </p>
+                  <div className="mt-4 flex max-h-[500px] flex-col items-center gap-3 overflow-y-auto">
+                    {timelineItems.map((item, index) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        title={`${item.title} · ${item.stampLabel}`}
+                        onClick={() =>
+                          timelineItemRefs.current[item.id]?.scrollIntoView({
+                            behavior: "smooth",
+                            block: "center",
+                          })
+                        }
+                        className="group flex w-full flex-col items-center gap-1 rounded-[18px] px-2 py-2 hover:bg-white"
+                      >
+                        <span
+                          className={`h-3 w-3 rounded-full ${item.tone} transition-transform group-hover:scale-110`}
+                        />
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9d8a80]">
+                          {index + 1}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
+
+          <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">
+            <section className="app-panel-warm px-5 py-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b46c50]">
+                    Runtime Summary
+                  </p>
+                  <h2 className="mt-2 text-[1.55rem] font-semibold tracking-[-0.04em] text-[#1d1713]">
+                    Agent reported status
+                  </h2>
+                </div>
+                <RefreshState active={runtimeRefreshing} label="Fresh" />
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-2">
+                {metricCurves.map((metric) => (
+                  <CurveMetricCard key={metric.label} metric={metric} />
+                ))}
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <SummaryMetricCard
+                  label="OS"
+                  value={formatMetricValue(
+                    firstValue(
+                      osInfo?.os_release,
+                      osInfo?.kernel,
+                      systemInfo?.hostname,
+                      agent?.host_info?.hostname,
+                    ),
+                  )}
+                />
+                <SummaryMetricCard
+                  label="OpenClaw"
+                  value={formatMetricValue(runtime?.openclaw_version)}
+                />
+                <SummaryMetricCard
+                  label="Skills"
+                  value={formatCountValue(skillCount)}
+                />
+                <SummaryMetricCard
+                  label="Agents"
+                  value={formatCountValue(agentCount)}
+                />
+                <SummaryMetricCard
+                  label="Channels"
+                  value={formatCountValue(channelCount)}
+                />
+              </div>
+
+              <div className="mt-5 rounded-[24px] border border-[#ead8cf] bg-white/82 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusBadge
+                    label={`Agent ${agent?.status || runtime?.agent_status || "offline"}`}
+                    status={agent?.status || runtime?.agent_status || "offline"}
+                  />
+                  <StatusBadge
+                    label={`Gateway ${gatewayStatus}`}
+                    status={gatewayStatus}
+                  />
+                </div>
+                <dl className="mt-4 grid gap-3 text-sm text-[#4d4039]">
+                  <MetaRow label="Agent ID" value={agent?.agent_id || "N/A"} />
+                  <MetaRow
+                    label="Agent Version"
+                    value={agent?.agent_version || "N/A"}
+                  />
+                  <MetaRow
+                    label="Protocol"
+                    value={agent?.protocol_version || "N/A"}
+                  />
+                  <MetaRow
+                    label="Last heartbeat"
+                    value={formatDateTime(agent?.last_heartbeat_at)}
+                  />
+                  <MetaRow
+                    label="Last report"
+                    value={formatDateTime(runtime?.last_reported_at)}
+                  />
+                  <MetaRow
+                    label="Pod IP"
+                    value={status?.pod_ip || instance.pod_ip || "N/A"}
+                  />
+                </dl>
+              </div>
+            </section>
+          </aside>
         </div>
-        )}
       </div>
     </UserLayout>
   );
 };
 
-function MetricTile({ label, value, hint }: { label: string; value: string; hint: string }) {
+function SummaryMetricCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[24px] border border-[#ead8cf] bg-white/78 p-4 shadow-[0_24px_60px_-44px_rgba(72,44,24,0.42)]">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#b09d93]">{label}</p>
-      <p className="mt-3 whitespace-nowrap text-[1.9rem] font-semibold leading-none tracking-[-0.04em] text-[#1d1713] tabular-nums">
+    <div className="rounded-[20px] border border-[#ead8cf] bg-white/82 px-4 py-3.5">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#b09d93]">
+        {label}
+      </p>
+      <p className="mt-2.5 text-sm font-semibold leading-6 text-[#1d1713]">
         {value}
       </p>
-      <p className="mt-3 text-sm text-[#7a6d66]">{hint}</p>
     </div>
   );
 }
 
-function DetailItem({ label, value }: { label: string; value: string }) {
+function CurveMetricCard({ metric }: { metric: MetricCurve }) {
   return (
-    <div className="rounded-[20px] border border-[#efe2d8] bg-[#fffaf7] px-4 py-4">
-      <dt className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#b09d93]">{label}</dt>
-      <dd className="mt-2 text-sm font-medium leading-6 text-[#1d1713]">{value}</dd>
+    <div className="overflow-hidden rounded-[22px] border border-[#ead8cf] bg-white/84 shadow-[0_16px_34px_-28px_rgba(72,44,24,0.3)]">
+      <div className="flex items-start justify-between gap-4 px-4 pb-2.5 pt-3.5">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#b09d93]">
+            {metric.label}
+          </p>
+          <p className="mt-1.5 text-[15px] font-semibold text-[#1d1713]">
+            {metric.value}
+          </p>
+        </div>
+        <span
+          className="mt-1 h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: metric.accent }}
+        />
+      </div>
+      <div className="px-3">
+        <Sparkline
+          points={metric.points}
+          accent={metric.accent}
+          secondaryPoints={metric.secondaryPoints}
+          secondaryAccent={metric.secondaryAccent}
+          preNormalized={metric.preNormalized}
+        />
+      </div>
+      {metric.legend && metric.legend.length > 0 ? (
+        <div className="flex items-center gap-3 px-4 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9b877c]">
+          {metric.legend.map((item) => (
+            <span key={item.label} className="inline-flex items-center gap-1.5">
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: item.accent }}
+              />
+              {item.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p className="px-4 pb-3.5 pt-1.5 text-[11px] leading-5 text-[#7a6d66]">
+        {metric.detail}
+      </p>
     </div>
   );
 }
 
-function ResourceStatCard({
-  value,
-  label,
-  tone,
+function buildSparklinePath(
+  points: MetricSample[],
+  chartLeft: number,
+  chartBottom: number,
+  chartWidth: number,
+  chartHeight: number,
+  options?: {
+    preNormalized?: boolean;
+  },
+) {
+  const normalized = options?.preNormalized
+    ? points.map((point) => Math.max(0.04, Math.min(point.value / 100, 1)))
+    : normalizePoints(points.map((point) => point.value));
+  if (!points.length) {
+    return {
+      normalized: [],
+      path: "",
+      areaPath: "",
+    };
+  }
+  const path = normalized
+    .map((point, index) => {
+      const x =
+        chartLeft +
+        ((points[index]?.ts ?? 0) / Math.max(METRIC_WINDOW_MS, 1)) * chartWidth;
+      const y = chartBottom - point * chartHeight;
+      return `${index === 0 ? "M" : "L"} ${x} ${y}`;
+    })
+    .join(" ");
+
+  return {
+    normalized,
+    path,
+    areaPath: `${path} L ${chartLeft + chartWidth} ${chartBottom} L ${chartLeft} ${chartBottom} Z`,
+  };
+}
+
+function Sparkline({
+  points,
+  accent,
+  secondaryPoints,
+  secondaryAccent,
+  preNormalized = false,
 }: {
-  value: string;
-  label: string;
-  tone: 'coral' | 'blue' | 'amber' | 'slate';
+  points: MetricSample[];
+  accent: string;
+  secondaryPoints?: MetricSample[];
+  secondaryAccent?: string;
+  preNormalized?: boolean;
 }) {
-  const accent = {
-    coral: 'from-[#fff3ee] to-[#fffdfb] border-[#f3d4c7] text-[#ef6b4a]',
-    blue: 'from-[#f3f7ff] to-[#ffffff] border-[#d8e4ff] text-[#3b82f6]',
-    amber: 'from-[#fff8ec] to-[#ffffff] border-[#f1dfb3] text-[#d59a22]',
-    slate: 'from-[#f5f7fb] to-[#ffffff] border-[#dfe6ef] text-[#5b6478]',
-  }[tone];
+  const width = 300;
+  const height = 96;
+  const chartLeft = 24;
+  const chartRight = width - 6;
+  const chartTop = 10;
+  const chartBottom = height - 18;
+  const chartWidth = chartRight - chartLeft;
+  const chartHeight = chartBottom - chartTop;
+  const primaryLine = buildSparklinePath(
+    points,
+    chartLeft,
+    chartBottom,
+    chartWidth,
+    chartHeight,
+    { preNormalized },
+  );
+  const secondaryLine =
+    secondaryPoints && secondaryPoints.length > 0
+      ? buildSparklinePath(
+          secondaryPoints,
+          chartLeft,
+          chartBottom,
+          chartWidth,
+          chartHeight,
+          { preNormalized },
+        )
+      : null;
+  const gradientId = `spark-${accent.replace("#", "")}`;
+  const secondaryGradientId = secondaryAccent
+    ? `spark-${secondaryAccent.replace("#", "")}`
+    : null;
+  const xLabels = buildXAxisLabels();
+  const yTicks = [
+    { label: "100", value: 1 },
+    { label: "50", value: 0.5 },
+    { label: "0", value: 0 },
+  ];
 
   return (
-    <div className={`rounded-[24px] border bg-gradient-to-br px-5 py-5 shadow-[0_20px_50px_-42px_rgba(72,44,24,0.42)] ${accent}`}>
-      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#b09d93]">{label}</p>
-      <p className="mt-4 whitespace-nowrap text-[2rem] font-semibold leading-none tracking-[-0.05em] text-[#1d1713] tabular-nums">
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="h-[92px] w-full"
+      preserveAspectRatio="none"
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor={accent} stopOpacity="0.34" />
+          <stop offset="100%" stopColor={accent} stopOpacity="0.02" />
+        </linearGradient>
+        {secondaryAccent && secondaryGradientId ? (
+          <linearGradient id={secondaryGradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={secondaryAccent} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={secondaryAccent} stopOpacity="0.01" />
+          </linearGradient>
+        ) : null}
+      </defs>
+      {yTicks.map((tick) => {
+        const y = chartBottom - tick.value * chartHeight;
+        return (
+          <g key={tick.label}>
+            <line
+              x1={chartLeft}
+              x2={chartRight}
+              y1={y}
+              y2={y}
+              stroke="rgba(143,122,112,0.12)"
+              strokeWidth="1"
+            />
+            <text
+              x={chartLeft - 6}
+              y={y + 3}
+              textAnchor="end"
+              fontSize="8"
+              fill="#b09d93"
+            >
+              {tick.label}
+            </text>
+          </g>
+        );
+      })}
+      <line
+        x1={chartLeft}
+        x2={chartRight}
+        y1={chartBottom}
+        y2={chartBottom}
+        stroke="rgba(143,122,112,0.18)"
+        strokeWidth="1.1"
+      />
+      <line
+        x1={chartLeft}
+        x2={chartLeft}
+        y1={chartTop}
+        y2={chartBottom}
+        stroke="rgba(143,122,112,0.18)"
+        strokeWidth="1.1"
+      />
+      <path d={primaryLine.areaPath} fill={`url(#${gradientId})`} stroke="none" />
+      {secondaryLine && secondaryAccent && secondaryGradientId ? (
+        <path
+          d={secondaryLine.areaPath}
+          fill={`url(#${secondaryGradientId})`}
+          stroke="none"
+        />
+      ) : null}
+      <path
+        d={primaryLine.path}
+        fill="none"
+        stroke={accent}
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {secondaryLine && secondaryAccent ? (
+        <path
+          d={secondaryLine.path}
+          fill="none"
+          stroke={secondaryAccent}
+          strokeWidth="2.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray="5 4"
+          opacity="1"
+        />
+      ) : null}
+      {xLabels.map((label) => {
+        const x =
+          chartLeft + (label.offsetMs / Math.max(METRIC_WINDOW_MS, 1)) * chartWidth;
+        return (
+          <g key={label.label}>
+            <line
+              x1={x}
+              x2={x}
+              y1={chartBottom}
+              y2={chartBottom + 3}
+              stroke="rgba(143,122,112,0.18)"
+              strokeWidth="1"
+            />
+            <text
+              x={x}
+              y={height - 5}
+              textAnchor="middle"
+              fontSize="8"
+              fill="#b09d93"
+            >
+              {label.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function buildXAxisLabels() {
+  return [
+    { label: "0", offsetMs: 0 },
+    { label: "1m", offsetMs: 1 * 60 * 1000 },
+    { label: "2m", offsetMs: 2 * 60 * 1000 },
+    { label: "3m", offsetMs: 3 * 60 * 1000 },
+    { label: "4m", offsetMs: 4 * 60 * 1000 },
+    { label: "5m", offsetMs: 5 * 60 * 1000 },
+  ];
+}
+
+function DetailCard({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="rounded-[22px] border border-[#efe2d8] bg-[#fffaf7] px-4 py-4">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#b09d93]">
+        {label}
+      </p>
+      <p
+        className={`mt-3 text-sm font-medium leading-6 text-[#1d1713] ${mono ? "break-all font-mono text-[13px]" : ""}`}
+      >
         {value}
       </p>
     </div>
   );
 }
 
-function StorageRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function MetaRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[20px] border border-[#efe2d8] bg-[#fffaf7] px-4 py-4">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#b09d93]">{label}</p>
-      <p className={`mt-2 text-sm font-medium leading-6 text-[#1d1713] ${mono ? 'break-all font-mono text-[13px]' : ''}`}>{value}</p>
+    <div className="flex items-start justify-between gap-4 border-b border-[#f1e5dd] pb-3 last:border-b-0 last:pb-0">
+      <dt className="text-[#8f7a70]">{label}</dt>
+      <dd className="text-right font-medium text-[#1d1713]">{value}</dd>
     </div>
   );
+}
+
+function StatusBadge({ label, status }: { label: string; status: string }) {
+  const style = statusStyle(status);
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${style.shell}`}
+    >
+      <span className={`mr-2 h-2 w-2 rounded-full ${style.dot}`} />
+      {label}
+    </span>
+  );
+}
+
+function RefreshState({ active, label }: { active: boolean; label: string }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.14em] transition-colors duration-300 ${
+        active
+          ? "border-[#d9e8f9] bg-[#f5f9ff] text-[#6581a4]"
+          : "border-[#ead8cf] bg-white/82 text-[#7a6d66]"
+      }`}
+    >
+      <span
+        className={`h-2.5 w-2.5 rounded-full transition-colors duration-300 ${
+          active ? "bg-[#93c5fd]" : "bg-[#22c55e]"
+        }`}
+      />
+      {label}
+    </span>
+  );
+}
+
+function buildTimelineItems(
+  instance: Instance,
+  status: InstanceStatus | null,
+  runtime: RuntimeStatus | undefined,
+  agent: AgentInfo | undefined,
+  commands: InstanceRuntimeCommand[],
+): TimelineItem[] {
+  const items: TimelineItem[] = [];
+
+  items.push({
+    id: `instance-created-${instance.id}`,
+    title: "Instance created",
+    detail: `${instance.name} was provisioned as ${instance.type}.`,
+    timestamp: new Date(instance.created_at).getTime(),
+    stampLabel: formatDateTime(instance.created_at),
+    tone: "bg-[#6366f1]",
+    section: "instance",
+  });
+
+  if (instance.started_at) {
+    items.push({
+      id: `instance-started-${instance.id}`,
+      title: "Instance started",
+      detail: "Infrastructure start was recorded for this instance.",
+      timestamp: new Date(instance.started_at).getTime(),
+      stampLabel: formatDateTime(instance.started_at),
+      tone: "bg-[#22c55e]",
+      section: "infra",
+    });
+  }
+
+  if (instance.stopped_at) {
+    items.push({
+      id: `instance-stopped-${instance.id}`,
+      title: "Instance stopped",
+      detail: "Infrastructure stop was recorded for this instance.",
+      timestamp: new Date(instance.stopped_at).getTime(),
+      stampLabel: formatDateTime(instance.stopped_at),
+      tone: "bg-[#94a3b8]",
+      section: "infra",
+    });
+  }
+
+  if (agent?.registered_at) {
+    items.push({
+      id: `agent-registered-${instance.id}`,
+      title: "Agent registered",
+      detail: `${agent.agent_id} connected to ClawManager using protocol ${agent.protocol_version}.`,
+      timestamp: new Date(agent.registered_at).getTime(),
+      stampLabel: formatDateTime(agent.registered_at),
+      tone: "bg-[#3b82f6]",
+      section: "agent",
+    });
+  }
+
+  if (runtime?.last_reported_at) {
+    items.push({
+      id: `runtime-report-${instance.id}`,
+      title: "Runtime status reported",
+      detail: `Agent reported gateway status ${runtime.openclaw_status} and infra status ${runtime.infra_status}.`,
+      timestamp: new Date(runtime.last_reported_at).getTime(),
+      stampLabel: formatDateTime(runtime.last_reported_at),
+      tone: "bg-[#f59e0b]",
+      section: "runtime",
+    });
+  }
+
+  if (status?.pod_status && status.created_at) {
+    items.push({
+      id: `pod-status-${instance.id}`,
+      title: "Pod status observed",
+      detail: `Kubernetes currently reports pod status ${status.pod_status}.`,
+      timestamp: new Date(status.created_at).getTime(),
+      stampLabel: formatDateTime(status.created_at),
+      tone: "bg-[#a855f7]",
+      section: "k8s",
+    });
+  }
+
+  commands.forEach((command) => {
+    const commandTime =
+      command.finished_at ||
+      command.started_at ||
+      command.dispatched_at ||
+      command.issued_at;
+    items.push({
+      id: `command-${command.id}`,
+      title: formatCommandTitle(command.command_type),
+      detail: command.error_message
+        ? `${command.status}: ${command.error_message}`
+        : `${command.status} · idempotency ${command.idempotency_key}`,
+      timestamp: new Date(commandTime).getTime(),
+      stampLabel: formatDateTime(commandTime),
+      tone: commandTone(command.status),
+      section: "command",
+    });
+  });
+
+  return items
+    .filter((item) => Number.isFinite(item.timestamp))
+    .sort((left, right) => right.timestamp - left.timestamp);
+}
+
+function formatDateTime(value?: string) {
+  if (!value) {
+    return "N/A";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+}
+
+function formatCommandTitle(commandType: string) {
+  return commandType
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function commandTone(status: string) {
+  switch (status) {
+    case "succeeded":
+      return "bg-[#22c55e]";
+    case "failed":
+    case "timed_out":
+      return "bg-[#ef4444]";
+    case "running":
+    case "dispatched":
+      return "bg-[#3b82f6]";
+    default:
+      return "bg-[#f59e0b]";
+  }
+}
+
+function firstValue(...values: unknown[]) {
+  return values.find((value) => {
+    if (value === null || value === undefined) {
+      return false;
+    }
+    if (typeof value === "string") {
+      return value.trim() !== "";
+    }
+    return true;
+  });
+}
+
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = getNumber(value);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function formatCountValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `${value.length}`;
+  }
+  if (typeof value === "number") {
+    return `${value}`;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    const count = (value as Record<string, unknown>).count;
+    if (typeof count === "number") {
+      return `${count}`;
+    }
+  }
+  return "N/A";
+}
+
+function asRecord(value: unknown): Record<string, any> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, any>;
+}
+
+function getNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function getArray(value: unknown): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function bytesToGB(value: number | null): string {
+  if (value === null) {
+    return "N/A";
+  }
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function percentLabel(value: number | null): string {
+  if (value === null) {
+    return "N/A";
+  }
+  return `${Math.round(value)}%`;
+}
+
+function buildMetricCurves({
+  cpuInfo,
+  memoryInfo,
+  diskInfo,
+  networkInfo,
+  metricHistory,
+  sessionStartedAt,
+}: {
+  cpuInfo?: Record<string, any>;
+  memoryInfo?: Record<string, any>;
+  diskInfo?: Record<string, any>;
+  networkInfo?: Record<string, any>;
+  metricHistory: MetricHistory;
+  sessionStartedAt: number;
+}): MetricCurve[] {
+  const cores = getNumber(cpuInfo?.cores) || 1;
+  const cpuLoad = asRecord(cpuInfo?.load);
+  const cpuPoints = [
+    Math.min(((getNumber(cpuLoad?.["15m"]) || 0) / cores) * 100, 100),
+    Math.min(((getNumber(cpuLoad?.["5m"]) || 0) / cores) * 100, 100),
+    Math.min(((getNumber(cpuLoad?.["1m"]) || 0) / cores) * 100, 100),
+  ];
+  const cpuCurrent = cpuPoints[cpuPoints.length - 1] ?? 0;
+
+  const memTotal = getNumber(memoryInfo?.mem_total_bytes);
+  const memAvailable = getNumber(memoryInfo?.mem_available_bytes);
+  const memUsedPercent =
+    memTotal && memAvailable !== null
+      ? ((memTotal - memAvailable) / memTotal) * 100
+      : null;
+
+  const diskTotal = getNumber(diskInfo?.root_total_bytes);
+  const diskFree = getNumber(diskInfo?.root_free_bytes);
+  const diskUsedPercent =
+    diskTotal && diskFree !== null
+      ? ((diskTotal - diskFree) / diskTotal) * 100
+      : null;
+
+  const interfaces = [
+    ...getArray(networkInfo?.interfaces),
+    ...getArray(networkInfo?.devices),
+    ...getArray(networkInfo?.links),
+  ];
+  const activeInterfaces = interfaces.filter((item) => {
+    const record = asRecord(item);
+    return Boolean(
+      record?.up ??
+      record?.is_up ??
+      (typeof record?.status === "string" &&
+        record.status.toLowerCase() === "up"),
+    );
+  }).length;
+  const addressCounts = interfaces.map((item) => {
+    const record = asRecord(item);
+    return (
+      getArray(record?.addresses).length ||
+      getArray(record?.addr).length ||
+      getArray(record?.ips).length ||
+      0
+    );
+  });
+  const inlineAddresses =
+    getArray(networkInfo?.addresses).length ||
+    getArray(networkInfo?.ip_addresses).length ||
+    (networkInfo?.primary_ip || networkInfo?.primary_ipv4 ? 1 : 0);
+  const totalAddresses =
+    addressCounts.reduce((sum, count) => sum + count, 0) + inlineAddresses;
+  const interfaceCount =
+    interfaces.length ||
+    getNumber(networkInfo?.interface_count) ||
+    getNumber(networkInfo?.interfaces_count) ||
+    0;
+  const networkTraffic = aggregateNetworkTraffic(networkInfo, interfaces);
+  const cpuSeries = toVisibleSeries(metricHistory.cpu, sessionStartedAt);
+  const memorySeries = toVisibleSeries(metricHistory.memory, sessionStartedAt);
+  const diskSeries = toVisibleSeries(metricHistory.disk, sessionStartedAt);
+  const networkDownSeriesRaw = toVisibleSeries(
+    metricHistory.networkDown,
+    sessionStartedAt,
+  );
+  const networkUpSeriesRaw = toVisibleSeries(metricHistory.networkUp, sessionStartedAt);
+  const networkPeak = Math.max(
+    ...networkDownSeriesRaw.map((sample) => sample.value),
+    ...networkUpSeriesRaw.map((sample) => sample.value),
+    1,
+  );
+  const networkDownSeries = networkDownSeriesRaw.map((sample) => ({
+    ...sample,
+    value: (sample.value / networkPeak) * 100,
+  }));
+  const networkUpSeries = networkUpSeriesRaw.map((sample) => ({
+    ...sample,
+    value: (sample.value / networkPeak) * 100,
+  }));
+  const networkBase =
+    interfaceCount > 0
+      ? Math.min((activeInterfaces / interfaceCount) * 100, 100)
+      : 0;
+  const addressBase = Math.min(totalAddresses * 16, 100);
+
+  return [
+    {
+      label: "CPU",
+      value: percentLabel(cpuCurrent),
+      detail: `${cores} cores · load 1m ${formatNumber(getNumber(cpuLoad?.["1m"]))} · 5m ${formatNumber(getNumber(cpuLoad?.["5m"]))} · 15m ${formatNumber(getNumber(cpuLoad?.["15m"]))}`,
+      accent: "#f97316",
+      points: cpuSeries,
+    },
+    {
+      label: "Memory",
+      value: percentLabel(memUsedPercent),
+      detail: `${bytesToGB(memTotal !== null && memAvailable !== null ? memTotal - memAvailable : null)} used / ${bytesToGB(memTotal)}`,
+      accent: "#3b82f6",
+      points: memorySeries,
+    },
+    {
+      label: "Disk",
+      value: percentLabel(diskUsedPercent),
+      detail: `${bytesToGB(diskFree)} free / ${bytesToGB(diskTotal)}`,
+      accent: "#d97706",
+      points: diskSeries,
+    },
+    {
+      label: "Network",
+      value:
+        formatTrafficPair(networkTraffic) ||
+        `${activeInterfaces}/${interfaceCount || 0}`,
+      detail:
+        formatTrafficDetail(networkTraffic) ||
+        `${totalAddresses} addresses across ${interfaceCount} interfaces`,
+      accent: "#14b8a6",
+      secondaryAccent:
+        networkTraffic.down !== null || networkTraffic.up !== null
+          ? "#3b82f6"
+          : undefined,
+      secondaryPoints:
+        networkTraffic.down !== null || networkTraffic.up !== null
+          ? networkUpSeries
+          : undefined,
+      legend:
+        networkTraffic.down !== null || networkTraffic.up !== null
+          ? [
+              { label: "Down", accent: "#14b8a6" },
+              { label: "Up", accent: "#3b82f6" },
+            ]
+          : undefined,
+      preNormalized:
+        networkTraffic.down !== null || networkTraffic.up !== null,
+      points:
+        networkTraffic.down !== null || networkTraffic.up !== null
+          ? networkDownSeries
+          : [
+              ...toVisibleSeries(metricHistory.networkDown, sessionStartedAt),
+              {
+                ts: Math.min(METRIC_WINDOW_MS, Date.now() - sessionStartedAt),
+                value: Math.max(networkBase, addressBase, 6),
+              },
+            ],
+    },
+  ];
+}
+
+function aggregateNetworkTraffic(
+  networkInfo: Record<string, any> | undefined,
+  interfaces: any[],
+) {
+  const nonLoopbackInterfaces = interfaces.filter((item) => {
+    const record = asRecord(item);
+    return `${record?.name || ""}`.toLowerCase() !== "lo";
+  });
+  const preferredInterfaces =
+    nonLoopbackInterfaces.length > 0 ? nonLoopbackInterfaces : interfaces;
+
+  const interfaceTotalsDown = preferredInterfaces
+    .map((item) =>
+      firstNumber(
+        asRecord(item)?.rx_bytes,
+        asRecord(item)?.bytes_recv,
+        asRecord(item)?.receive_bytes,
+        asRecord(item)?.ingress_bytes,
+      ),
+    )
+    .filter((value): value is number => value !== null);
+  const interfaceTotalsUp = preferredInterfaces
+    .map((item) =>
+      firstNumber(
+        asRecord(item)?.tx_bytes,
+        asRecord(item)?.bytes_sent,
+        asRecord(item)?.transmit_bytes,
+        asRecord(item)?.egress_bytes,
+      ),
+    )
+    .filter((value): value is number => value !== null);
+
+  if (interfaceTotalsDown.length > 0 || interfaceTotalsUp.length > 0) {
+    return {
+      down: interfaceTotalsDown.length
+        ? interfaceTotalsDown.reduce((sum, value) => sum + value, 0)
+        : null,
+      up: interfaceTotalsUp.length
+        ? interfaceTotalsUp.reduce((sum, value) => sum + value, 0)
+        : null,
+    };
+  }
+
+  const directDown = firstNumber(
+    networkInfo?.rx_rate_bps,
+    networkInfo?.rx_bps,
+    networkInfo?.rx_bytes_per_sec,
+    networkInfo?.rx_rate,
+    networkInfo?.download_bps,
+    networkInfo?.download_rate_bps,
+    networkInfo?.download_rate,
+    networkInfo?.inbound_bps,
+    networkInfo?.inbound_rate_bps,
+    networkInfo?.inbound_rate,
+    networkInfo?.ingress_bps,
+    networkInfo?.ingress_rate_bps,
+    networkInfo?.ingress_rate,
+    networkInfo?.receive_bps,
+    networkInfo?.receive_rate_bps,
+    networkInfo?.receive_rate,
+    networkInfo?.rx_bytes,
+    networkInfo?.download_bytes,
+    networkInfo?.inbound_bytes,
+    networkInfo?.ingress_bytes,
+    networkInfo?.receive_bytes,
+    networkInfo?.bytes_recv,
+  );
+  const directUp = firstNumber(
+    networkInfo?.tx_rate_bps,
+    networkInfo?.tx_bps,
+    networkInfo?.tx_bytes_per_sec,
+    networkInfo?.tx_rate,
+    networkInfo?.upload_bps,
+    networkInfo?.upload_rate_bps,
+    networkInfo?.upload_rate,
+    networkInfo?.outbound_bps,
+    networkInfo?.outbound_rate_bps,
+    networkInfo?.outbound_rate,
+    networkInfo?.egress_bps,
+    networkInfo?.egress_rate_bps,
+    networkInfo?.egress_rate,
+    networkInfo?.transmit_bps,
+    networkInfo?.transmit_rate_bps,
+    networkInfo?.transmit_rate,
+    networkInfo?.tx_bytes,
+    networkInfo?.upload_bytes,
+    networkInfo?.outbound_bytes,
+    networkInfo?.egress_bytes,
+    networkInfo?.transmit_bytes,
+    networkInfo?.bytes_sent,
+  );
+
+  if (directDown !== null || directUp !== null) {
+    return { down: directDown, up: directUp };
+  }
+
+  const perInterfaceDown = preferredInterfaces
+    .map((item) =>
+      firstNumber(
+        asRecord(item)?.rx_rate_bps,
+        asRecord(item)?.rx_bps,
+        asRecord(item)?.rx_bytes_per_sec,
+        asRecord(item)?.rx_rate,
+        asRecord(item)?.download_bps,
+        asRecord(item)?.download_rate_bps,
+        asRecord(item)?.download_rate,
+        asRecord(item)?.ingress_bps,
+        asRecord(item)?.ingress_rate_bps,
+        asRecord(item)?.ingress_rate,
+        asRecord(item)?.receive_bps,
+        asRecord(item)?.receive_rate_bps,
+        asRecord(item)?.receive_rate,
+        asRecord(item)?.rx_bytes,
+        asRecord(item)?.ingress_bytes,
+        asRecord(item)?.receive_bytes,
+        asRecord(item)?.bytes_recv,
+      ),
+    )
+    .filter((value): value is number => value !== null);
+  const perInterfaceUp = preferredInterfaces
+    .map((item) =>
+      firstNumber(
+        asRecord(item)?.tx_rate_bps,
+        asRecord(item)?.tx_bps,
+        asRecord(item)?.tx_bytes_per_sec,
+        asRecord(item)?.tx_rate,
+        asRecord(item)?.upload_bps,
+        asRecord(item)?.upload_rate_bps,
+        asRecord(item)?.upload_rate,
+        asRecord(item)?.egress_bps,
+        asRecord(item)?.egress_rate_bps,
+        asRecord(item)?.egress_rate,
+        asRecord(item)?.transmit_bps,
+        asRecord(item)?.transmit_rate_bps,
+        asRecord(item)?.transmit_rate,
+        asRecord(item)?.tx_bytes,
+        asRecord(item)?.egress_bytes,
+        asRecord(item)?.transmit_bytes,
+        asRecord(item)?.bytes_sent,
+      ),
+    )
+    .filter((value): value is number => value !== null);
+
+  return {
+    down: perInterfaceDown.length
+      ? perInterfaceDown.reduce((sum, value) => sum + value, 0)
+      : null,
+    up: perInterfaceUp.length
+      ? perInterfaceUp.reduce((sum, value) => sum + value, 0)
+      : null,
+  };
+}
+
+function normalizePoints(points: number[]): number[] {
+  const safe = points.map((point) => Math.max(0.04, Math.min(point / 100, 1)));
+  const max = Math.max(...safe, 0.04);
+  return safe.map((point) => Math.max(point / max, 0.08));
+}
+
+function formatNumber(value: number | null): string {
+  if (value === null) {
+    return "N/A";
+  }
+  return value.toFixed(2);
+}
+
+function formatBytesCompact(value: number | null): string {
+  if (value === null) {
+    return "N/A";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatTrafficPair(traffic: {
+  down: number | null;
+  up: number | null;
+}) {
+  if (traffic.down === null && traffic.up === null) {
+    return "";
+  }
+  return `↓ ${formatBytesCompact(traffic.down)} ↑ ${formatBytesCompact(traffic.up)}`;
+}
+
+function formatTrafficDetail(traffic: {
+  down: number | null;
+  up: number | null;
+}) {
+  if (traffic.down === null && traffic.up === null) {
+    return "";
+  }
+  return `Inbound ${formatBytesCompact(traffic.down)} · Outbound ${formatBytesCompact(traffic.up)}`;
+}
+
+function appendMetricSample(
+  samples: MetricSample[],
+  value: number | null,
+  ts: number,
+): MetricSample[] {
+  if (value === null || !Number.isFinite(value)) {
+    return trimMetricSamples(samples, ts);
+  }
+  return trimMetricSamples(
+    [
+      ...samples,
+      {
+        ts,
+        value: Math.max(0, value),
+      },
+    ],
+    ts,
+  );
+}
+
+function trimMetricSamples(samples: MetricSample[], ts: number): MetricSample[] {
+  const cutoff = ts - METRIC_WINDOW_MS;
+  return samples.filter((sample) => sample.ts >= cutoff);
+}
+
+function toVisibleSeries(
+  samples: MetricSample[],
+  sessionStartedAt: number,
+): MetricSample[] {
+  const now = Date.now();
+  const windowStart = Math.max(sessionStartedAt, now - METRIC_WINDOW_MS);
+  return samples
+    .filter((sample) => sample.ts >= windowStart)
+    .map((sample) => ({
+      ts: Math.max(0, Math.min(sample.ts - windowStart, METRIC_WINDOW_MS)),
+      value: Math.max(0, Math.min(sample.value, 100)),
+    }));
+}
+
+function extractMetricSnapshot(systemInfoValue: unknown) {
+  const systemInfo = asRecord(systemInfoValue);
+  if (!systemInfo) {
+    return null;
+  }
+
+  const cpuInfo = asRecord(systemInfo.cpu);
+  const cpuLoad = asRecord(cpuInfo?.load);
+  const cores = getNumber(cpuInfo?.cores) || 1;
+  const cpuPercent = Math.min(
+    (((getNumber(cpuLoad?.["1m"]) || 0) / cores) * 100) || 0,
+    100,
+  );
+
+  const memoryInfo = asRecord(systemInfo.memory);
+  const memTotal = getNumber(memoryInfo?.mem_total_bytes);
+  const memAvailable = getNumber(memoryInfo?.mem_available_bytes);
+  const memoryPercent =
+    memTotal && memAvailable !== null
+      ? ((memTotal - memAvailable) / memTotal) * 100
+      : null;
+
+  const diskInfo = asRecord(systemInfo.disk);
+  const diskTotal = getNumber(diskInfo?.root_total_bytes);
+  const diskFree = getNumber(diskInfo?.root_free_bytes);
+  const diskPercent =
+    diskTotal && diskFree !== null
+      ? ((diskTotal - diskFree) / diskTotal) * 100
+      : null;
+
+  const networkInfo = asRecord(systemInfo.network);
+  const interfaces = [
+    ...getArray(networkInfo?.interfaces),
+    ...getArray(networkInfo?.devices),
+    ...getArray(networkInfo?.links),
+  ];
+  const networkTraffic = aggregateNetworkTraffic(networkInfo, interfaces);
+
+  return {
+    cpuPercent,
+    memoryPercent,
+    diskPercent,
+    networkDownTotal: networkTraffic.down,
+    networkUpTotal: networkTraffic.up,
+  };
+}
+
+function formatMetricValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "N/A";
+  }
+  if (typeof value === "string") {
+    return value.trim() || "N/A";
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return `${value}`;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "N/A";
+    }
+    return value
+      .map((item) => formatMetricValue(item))
+      .filter((item) => item !== "N/A")
+      .join(", ");
+  }
+
+  const record = value as Record<string, unknown>;
+  const label = firstValue(
+    record.label,
+    record.value,
+    record.total,
+    record.total_gb,
+    record.model,
+    record.name,
+    record.version,
+    record.hostname,
+    record.primary_ip,
+  );
+
+  if (label !== undefined) {
+    return formatMetricValue(label);
+  }
+
+  try {
+    return JSON.stringify(record);
+  } catch {
+    return "N/A";
+  }
 }
 
 export default InstanceDetailPage;

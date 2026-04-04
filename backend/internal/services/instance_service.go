@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ type InstanceService interface {
 	Create(userID int, req CreateInstanceRequest) (*models.Instance, error)
 	GetByID(id int) (*models.Instance, error)
 	GetByUserID(userID int, offset, limit int) ([]models.Instance, int, error)
+	GetVisibleInstances(userID int, userRole string, offset, limit int) ([]models.Instance, int, error)
 	Start(instanceID int) error
 	Stop(instanceID int) error
 	Restart(instanceID int) error
@@ -210,11 +212,20 @@ func (s *instanceService) Create(userID int, req CreateInstanceRequest) (*models
 		s.instanceRepo.Delete(instance.ID)
 		return nil, fmt.Errorf("failed to provision instance gateway token: %w", err)
 	}
+	if _, err := s.ensureAgentBootstrapToken(instance); err != nil {
+		s.instanceRepo.Delete(instance.ID)
+		return nil, fmt.Errorf("failed to provision instance agent bootstrap token: %w", err)
+	}
 
 	gatewayEnv, err := s.buildGatewayEnv(instance)
 	if err != nil {
 		s.instanceRepo.Delete(instance.ID)
 		return nil, fmt.Errorf("failed to build instance gateway config: %w", err)
+	}
+	agentEnv, err := s.buildAgentEnv(instance)
+	if err != nil {
+		s.instanceRepo.Delete(instance.ID)
+		return nil, fmt.Errorf("failed to build instance agent config: %w", err)
 	}
 
 	var bootstrapSnapshot *models.OpenClawInjectionSnapshot
@@ -281,7 +292,7 @@ func (s *instanceService) Create(userID int, req CreateInstanceRequest) (*models
 		Image:              runtimeConfig.Image,
 		MountPath:          runtimeConfig.MountPath,
 		ContainerPort:      runtimeConfig.Port,
-		ExtraEnv:           withInstanceProxyEnv(instance.Type, instance.ID, mergeEnvMaps(runtimeConfig.Env, gatewayEnv)),
+		ExtraEnv:           withInstanceProxyEnv(instance.Type, instance.ID, mergeEnvMaps(runtimeConfig.Env, mergeEnvMaps(gatewayEnv, agentEnv))),
 		EnvFromSecretNames: []string{bootstrapSecretName},
 	}
 
@@ -377,6 +388,24 @@ func (s *instanceService) GetByUserID(userID int, offset, limit int) ([]models.I
 	return instances, total, nil
 }
 
+func (s *instanceService) GetVisibleInstances(userID int, userRole string, offset, limit int) ([]models.Instance, int, error) {
+	if strings.EqualFold(strings.TrimSpace(userRole), "admin") {
+		instances, err := s.instanceRepo.GetAll(offset, limit)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		total, err := s.instanceRepo.CountAll()
+		if err != nil {
+			return nil, 0, err
+		}
+
+		return instances, total, nil
+	}
+
+	return s.GetByUserID(userID, offset, limit)
+}
+
 // Start starts an instance
 func (s *instanceService) Start(instanceID int) error {
 	ctx := context.Background()
@@ -397,10 +426,17 @@ func (s *instanceService) Start(instanceID int) error {
 	if _, err := s.ensureGatewayToken(instance); err != nil {
 		return fmt.Errorf("failed to provision instance gateway token: %w", err)
 	}
+	if _, err := s.ensureAgentBootstrapToken(instance); err != nil {
+		return fmt.Errorf("failed to provision instance agent bootstrap token: %w", err)
+	}
 
 	gatewayEnv, err := s.buildGatewayEnv(instance)
 	if err != nil {
 		return fmt.Errorf("failed to build instance gateway config: %w", err)
+	}
+	agentEnv, err := s.buildAgentEnv(instance)
+	if err != nil {
+		return fmt.Errorf("failed to build instance agent config: %w", err)
 	}
 
 	bootstrapSecretName := ""
@@ -431,7 +467,7 @@ func (s *instanceService) Start(instanceID int) error {
 		Image:              runtimeConfig.Image,
 		MountPath:          instance.MountPath,
 		ContainerPort:      runtimeConfig.Port,
-		ExtraEnv:           withInstanceProxyEnv(instance.Type, instance.ID, mergeEnvMaps(runtimeConfig.Env, gatewayEnv)),
+		ExtraEnv:           withInstanceProxyEnv(instance.Type, instance.ID, mergeEnvMaps(runtimeConfig.Env, mergeEnvMaps(gatewayEnv, agentEnv))),
 		EnvFromSecretNames: []string{bootstrapSecretName},
 	}
 
@@ -530,6 +566,49 @@ func (s *instanceService) buildGatewayEnv(instance *models.Instance) (map[string
 		"OPENAI_API_BASE":            baseURL,
 		"OPENAI_API_KEY":             token,
 		"OPENAI_MODEL":               modelName,
+	}, nil
+}
+
+func (s *instanceService) ensureAgentBootstrapToken(instance *models.Instance) (string, error) {
+	if instance.AgentBootstrapToken != nil && strings.TrimSpace(*instance.AgentBootstrapToken) != "" {
+		return strings.TrimSpace(*instance.AgentBootstrapToken), nil
+	}
+
+	token, err := generatePrefixedToken("agt_boot")
+	if err != nil {
+		return "", fmt.Errorf("failed to generate instance agent bootstrap token: %w", err)
+	}
+	instance.AgentBootstrapToken = &token
+	instance.UpdatedAt = time.Now()
+	if err := s.instanceRepo.Update(instance); err != nil {
+		return "", fmt.Errorf("failed to persist instance agent bootstrap token: %w", err)
+	}
+	return token, nil
+}
+
+func (s *instanceService) buildAgentEnv(instance *models.Instance) (map[string]string, error) {
+	if instance == nil || !strings.EqualFold(strings.TrimSpace(instance.Type), "openclaw") {
+		return map[string]string{}, nil
+	}
+	if instance.AgentBootstrapToken == nil || strings.TrimSpace(*instance.AgentBootstrapToken) == "" {
+		return nil, fmt.Errorf("instance agent bootstrap token is not configured")
+	}
+
+	baseURL, ok := defaultAgentControlBaseURL()
+	if !ok {
+		return nil, fmt.Errorf("agent control base URL is not configured")
+	}
+
+	diskLimitBytes := int64(instance.DiskGB) * 1024 * 1024 * 1024
+
+	return map[string]string{
+		"CLAWMANAGER_AGENT_ENABLED":          "true",
+		"CLAWMANAGER_AGENT_BASE_URL":         baseURL,
+		"CLAWMANAGER_AGENT_BOOTSTRAP_TOKEN":  strings.TrimSpace(*instance.AgentBootstrapToken),
+		"CLAWMANAGER_AGENT_DISK_LIMIT_BYTES": strconv.FormatInt(diskLimitBytes, 10),
+		"CLAWMANAGER_AGENT_INSTANCE_ID":      fmt.Sprintf("%d", instance.ID),
+		"CLAWMANAGER_AGENT_PERSISTENT_DIR":   "/config",
+		"CLAWMANAGER_AGENT_PROTOCOL_VERSION": AgentProtocolVersionV1,
 	}, nil
 }
 
