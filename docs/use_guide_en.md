@@ -624,6 +624,7 @@ To create a channel, follow these steps:
    - **Enabled**: it is recommended to keep this checked
 5. In the **Channel Template** section, choose an initial template. The currently supported templates include:
    - `Telegram`
+   - `DingTalk`
    - `Slack`
    - `Feishu / Lark`
 

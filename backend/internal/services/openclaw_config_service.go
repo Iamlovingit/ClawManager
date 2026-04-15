@@ -1278,6 +1278,8 @@ func appendCompiledOpenClawEnvPayload(payload interface{}, resource compiledOpen
 
 func normalizeOpenClawChannelConfigForEnv(resourceKey string, configPayload interface{}) interface{} {
 	switch strings.ToLower(strings.TrimSpace(resourceKey)) {
+	case "dingtalk-connector":
+		return normalizeDingTalkChannelConfigForEnv(configPayload)
 	case "feishu":
 		return normalizeFeishuChannelConfigForEnv(configPayload)
 	case "slack":
@@ -1399,6 +1401,28 @@ func normalizeTelegramChannelConfigForEnv(configPayload interface{}) map[string]
 	}
 }
 
+func normalizeDingTalkChannelConfigForEnv(configPayload interface{}) map[string]interface{} {
+	config, ok := configPayload.(map[string]interface{})
+	if !ok {
+		config = map[string]interface{}{}
+	}
+
+	clientID, _ := config["clientId"].(string)
+	clientSecret, _ := config["clientSecret"].(string)
+
+	allowFrom := normalizeStringArrayForEnv(config["allowFrom"])
+	if len(allowFrom) == 0 {
+		allowFrom = []string{"*"}
+	}
+
+	return map[string]interface{}{
+		"enabled":      true,
+		"clientId":     clientID,
+		"clientSecret": clientSecret,
+		"allowFrom":    allowFrom,
+	}
+}
+
 func normalizeStringArrayForEnv(value interface{}) []string {
 	items, ok := value.([]interface{})
 	if !ok {
@@ -1432,6 +1456,7 @@ func normalizeOpenClawResourceContent(resourceType, resourceKey string, raw json
 	}
 
 	normalizedConfig := normalizeOpenClawChannelConfigForEnv(resourceKey, configPayload)
+	envelope.Format = openClawChannelFormat(resourceKey)
 	envelope.Config, err = json.Marshal(normalizedConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal normalized openclaw channel config")
@@ -1511,6 +1536,14 @@ func normalizeResourceType(resourceType string) string {
 
 func normalizeResourceKey(resourceKey string) string {
 	return strings.TrimSpace(resourceKey)
+}
+
+func openClawChannelFormat(resourceKey string) string {
+	key := normalizeResourceKey(resourceKey)
+	if key == "" {
+		return "channel/custom@v1"
+	}
+	return fmt.Sprintf("channel/%s@v1", key)
 }
 
 func canonicalizeOpenClawKind(kind string) string {

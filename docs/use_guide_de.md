@@ -624,6 +624,7 @@ Gehe beim Erstellen eines Kanals wie folgt vor:
    - **Aktiviert**: Es wird empfohlen, diese Option aktiviert zu lassen
 5. Wähle im Bereich **Channel Template** eine Startvorlage aus. Derzeit werden folgende Vorlagen unterstützt:
    - `Telegram`
+   - `DingTalk`
    - `Slack`
    - `Feishu / Lark`
 
