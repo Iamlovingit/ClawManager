@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -78,6 +79,11 @@ type instanceService struct {
 	pvcService            *k8s.PVCService
 	serviceService        *k8s.ServiceService
 	networkPolicyService  *k8s.NetworkPolicyService
+}
+
+type gatewayModelInjection struct {
+	defaultModel string
+	modelsJSON   string
 }
 
 // NewInstanceService creates a new instance service
@@ -569,7 +575,7 @@ func (s *instanceService) buildGatewayEnv(instance *models.Instance) (map[string
 		return nil, fmt.Errorf("gateway base URL is not configured")
 	}
 
-	modelName, err := s.resolveDefaultGatewayModel()
+	modelInjection, err := s.resolveGatewayModelInjection()
 	if err != nil {
 		return nil, err
 	}
@@ -578,13 +584,13 @@ func (s *instanceService) buildGatewayEnv(instance *models.Instance) (map[string
 	return map[string]string{
 		"CLAWMANAGER_LLM_BASE_URL":   baseURL,
 		"CLAWMANAGER_LLM_API_KEY":    token,
-		"CLAWMANAGER_LLM_MODEL":      modelName,
+		"CLAWMANAGER_LLM_MODEL":      modelInjection.modelsJSON,
 		"CLAWMANAGER_LLM_PROVIDER":   "openai-compatible",
 		"CLAWMANAGER_INSTANCE_TOKEN": token,
 		"OPENAI_BASE_URL":            baseURL,
 		"OPENAI_API_BASE":            baseURL,
 		"OPENAI_API_KEY":             token,
-		"OPENAI_MODEL":               modelName,
+		"OPENAI_MODEL":               modelInjection.defaultModel,
 	}, nil
 }
 
@@ -631,19 +637,50 @@ func (s *instanceService) buildAgentEnv(instance *models.Instance) (map[string]s
 	}, nil
 }
 
-func (s *instanceService) resolveDefaultGatewayModel() (string, error) {
+func (s *instanceService) resolveGatewayModelInjection() (*gatewayModelInjection, error) {
 	if s.llmModelRepo == nil {
-		return "", fmt.Errorf("llm model repository not configured")
+		return nil, fmt.Errorf("llm model repository not configured")
 	}
 
 	items, err := s.llmModelRepo.ListActive()
 	if err != nil {
-		return "", fmt.Errorf("failed to list active models: %w", err)
+		return nil, fmt.Errorf("failed to list active models: %w", err)
 	}
 	if len(items) == 0 {
-		return "", fmt.Errorf("no active models are configured")
+		return nil, fmt.Errorf("no active models are configured")
 	}
-	return "auto", nil
+
+	modelsForInjection := []string{"auto"}
+	seen := map[string]struct{}{
+		"auto": {},
+	}
+
+	for _, item := range items {
+		displayName := strings.TrimSpace(item.DisplayName)
+		if displayName == "" {
+			displayName = strings.TrimSpace(item.ProviderModelName)
+		}
+		if displayName == "" {
+			continue
+		}
+
+		normalizedName := strings.ToLower(displayName)
+		if _, exists := seen[normalizedName]; exists {
+			continue
+		}
+		seen[normalizedName] = struct{}{}
+		modelsForInjection = append(modelsForInjection, displayName)
+	}
+
+	rawModels, err := json.Marshal(modelsForInjection)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode gateway model list: %w", err)
+	}
+
+	return &gatewayModelInjection{
+		defaultModel: "auto",
+		modelsJSON:   string(rawModels),
+	}, nil
 }
 
 func mergeEnvMaps(base map[string]string, overlay map[string]string) map[string]string {

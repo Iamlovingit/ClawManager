@@ -150,7 +150,7 @@ const getBuiltInEnvTemplates = (
       {
         key: "CLAWMANAGER_LLM_MODEL",
         description: t("instances.envDescLlmModel"),
-        defaultValue: "auto",
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
       },
       {
         key: "CLAWMANAGER_LLM_PROVIDER",
