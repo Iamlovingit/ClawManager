@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"clawreef/internal/models"
@@ -23,23 +24,58 @@ type InstanceProxyService struct {
 	serviceService *k8s.ServiceService
 	accessService  *InstanceAccessService
 	httpClient     *http.Client
+	serviceCache   map[serviceCacheKey]serviceCacheEntry
+	serviceLookups map[serviceCacheKey]*serviceLookupCall
+	cacheMu        sync.RWMutex
+	lookupMu       sync.Mutex
+	serviceTTL     time.Duration
 }
+
+type serviceCacheKey struct {
+	userID     int
+	instanceID int
+	targetPort int32
+}
+
+type serviceCacheEntry struct {
+	serviceInfo *k8s.ServiceInfo
+	expiresAt   time.Time
+}
+
+type serviceLookupCall struct {
+	done        chan struct{}
+	serviceInfo *k8s.ServiceInfo
+	err         error
+}
+
+const defaultServiceCacheTTL = 30 * time.Second
 
 // NewInstanceProxyService creates a new instance proxy service
 func NewInstanceProxyService(accessService *InstanceAccessService) *InstanceProxyService {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+		MaxIdleConns:          256,
+		MaxIdleConnsPerHost:   128,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+
 	return &InstanceProxyService{
 		serviceService: k8s.NewServiceService(),
 		accessService:  accessService,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				// Don't follow redirects automatically, let the client handle them
 				return http.ErrUseLastResponse
 			},
 		},
+		serviceCache:   make(map[serviceCacheKey]serviceCacheEntry),
+		serviceLookups: make(map[serviceCacheKey]*serviceLookupCall),
+		serviceTTL:     defaultServiceCacheTTL,
 	}
 }
 
@@ -69,6 +105,7 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	// Extract the actual path from the request (remove the proxy prefix)
 	targetPath := s.extractTargetPath(r.URL.Path, instanceID, accessToken.InstanceType)
 	targetPort := s.resolveTargetPort(accessToken.InstanceType, accessToken.TargetPort, targetPath)
+	shouldRewriteHTML := s.shouldRewriteHTML(accessToken.InstanceType)
 
 	// Get service info for the instance (create if not exists)
 	serviceInfo, err := s.getOrCreateService(ctx, accessToken.UserID, instanceID, targetPort)
@@ -111,7 +148,9 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	proxyReq.Header.Set("X-Forwarded-Host", r.Host)
 	proxyReq.Header.Set("X-Forwarded-Proto", requestScheme(r))
 	proxyReq.Header.Set("X-Forwarded-Prefix", fmt.Sprintf("/api/v1/instances/%d/proxy", instanceID))
-	proxyReq.Header.Del("Accept-Encoding")
+	if shouldRewriteHTML {
+		proxyReq.Header.Del("Accept-Encoding")
+	}
 
 	// Remove hop-by-hop headers
 	s.removeHopByHopHeaders(proxyReq.Header)
@@ -131,7 +170,7 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 		resp.Header.Set("Location", s.rewriteRedirectLocation(instanceID, location))
 	}
 
-	if strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+	if shouldRewriteHTML && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		body, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			return fmt.Errorf("failed to read upstream html: %w", readErr)
@@ -267,13 +306,23 @@ func (s *InstanceProxyService) ProxyWebSocket(ctx context.Context, instanceID in
 	errCh := make(chan error, 2)
 	pipe := func(dst, src *websocket.Conn) {
 		for {
-			messageType, payload, readErr := src.ReadMessage()
+			messageType, reader, readErr := src.NextReader()
 			if readErr != nil {
 				errCh <- readErr
 				return
 			}
-			if writeErr := dst.WriteMessage(messageType, payload); writeErr != nil {
+			writer, writeErr := dst.NextWriter(messageType)
+			if writeErr != nil {
 				errCh <- writeErr
+				return
+			}
+			if _, copyErr := io.Copy(writer, reader); copyErr != nil {
+				_ = writer.Close()
+				errCh <- copyErr
+				return
+			}
+			if closeErr := writer.Close(); closeErr != nil {
+				errCh <- closeErr
 				return
 			}
 		}
@@ -317,13 +366,38 @@ func (s *InstanceProxyService) removeHopByHopHeaders(header http.Header) {
 
 // getOrCreateService gets service info or creates the service if it doesn't exist
 func (s *InstanceProxyService) getOrCreateService(ctx context.Context, userID, instanceID int, targetPort int32) (*k8s.ServiceInfo, error) {
-	// Try to get existing service
-	serviceInfo, err := s.serviceService.GetServiceInfo(ctx, userID, instanceID, targetPort)
-	if err == nil {
-		return serviceInfo, nil
+	cacheKey := serviceCacheKey{
+		userID:     userID,
+		instanceID: instanceID,
+		targetPort: targetPort,
+	}
+	if cached := s.getCachedService(cacheKey); cached != nil {
+		return cached, nil
 	}
 
-	// Service doesn't exist, need to create it
+	call, leader := s.getOrCreateLookup(cacheKey)
+	if !leader {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("service lookup canceled: %w", ctx.Err())
+		case <-call.done:
+			if call.err != nil {
+				return nil, call.err
+			}
+			return cloneServiceInfo(call.serviceInfo), nil
+		}
+	}
+
+	defer s.finishLookup(cacheKey, call)
+
+	serviceInfo, err := s.serviceService.GetServiceInfo(ctx, userID, instanceID, targetPort)
+	if err == nil {
+		s.storeCachedService(cacheKey, serviceInfo)
+		call.serviceInfo = cloneServiceInfo(serviceInfo)
+		return cloneServiceInfo(serviceInfo), nil
+	}
+
+	// Try to get existing service
 	serviceConfig := k8s.ServiceConfig{
 		InstanceID:      instanceID,
 		InstanceName:    fmt.Sprintf("instance-%d", instanceID),
@@ -335,11 +409,14 @@ func (s *InstanceProxyService) getOrCreateService(ctx context.Context, userID, i
 	fmt.Printf("Service not found for instance %d, creating new service...\n", instanceID)
 	serviceInfo, err = s.serviceService.CreateService(ctx, serviceConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create service: %w", err)
+		call.err = fmt.Errorf("failed to create service: %w", err)
+		return nil, call.err
 	}
 
+	s.storeCachedService(cacheKey, serviceInfo)
+	call.serviceInfo = cloneServiceInfo(serviceInfo)
 	fmt.Printf("Service created successfully for instance %d (ClusterIP: %s)\n", instanceID, serviceInfo.ClusterIP)
-	return serviceInfo, nil
+	return cloneServiceInfo(serviceInfo), nil
 }
 
 // extractTargetPath extracts the target path from the proxy URL
@@ -443,6 +520,66 @@ func usesHTTPSUpstream(instanceType string) bool {
 
 func (s *InstanceProxyService) resolveProxyHost(ctx context.Context, userID, instanceID int, serviceInfo *k8s.ServiceInfo) string {
 	return fmt.Sprintf("%s:%d", serviceInfo.ClusterIP, serviceInfo.TargetPort)
+}
+
+func (s *InstanceProxyService) shouldRewriteHTML(instanceType string) bool {
+	return !usesWebtopImage(instanceType)
+}
+
+func (s *InstanceProxyService) getCachedService(key serviceCacheKey) *k8s.ServiceInfo {
+	s.cacheMu.RLock()
+	entry, ok := s.serviceCache[key]
+	s.cacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		if ok {
+			s.cacheMu.Lock()
+			delete(s.serviceCache, key)
+			s.cacheMu.Unlock()
+		}
+		return nil
+	}
+
+	return cloneServiceInfo(entry.serviceInfo)
+}
+
+func (s *InstanceProxyService) storeCachedService(key serviceCacheKey, serviceInfo *k8s.ServiceInfo) {
+	s.cacheMu.Lock()
+	s.serviceCache[key] = serviceCacheEntry{
+		serviceInfo: cloneServiceInfo(serviceInfo),
+		expiresAt:   time.Now().Add(s.serviceTTL),
+	}
+	s.cacheMu.Unlock()
+}
+
+func (s *InstanceProxyService) getOrCreateLookup(key serviceCacheKey) (*serviceLookupCall, bool) {
+	s.lookupMu.Lock()
+	defer s.lookupMu.Unlock()
+
+	if existing, ok := s.serviceLookups[key]; ok {
+		return existing, false
+	}
+
+	call := &serviceLookupCall{
+		done: make(chan struct{}),
+	}
+	s.serviceLookups[key] = call
+	return call, true
+}
+
+func (s *InstanceProxyService) finishLookup(key serviceCacheKey, call *serviceLookupCall) {
+	s.lookupMu.Lock()
+	delete(s.serviceLookups, key)
+	close(call.done)
+	s.lookupMu.Unlock()
+}
+
+func cloneServiceInfo(serviceInfo *k8s.ServiceInfo) *k8s.ServiceInfo {
+	if serviceInfo == nil {
+		return nil
+	}
+
+	cloned := *serviceInfo
+	return &cloned
 }
 
 func injectProxyBase(html, proxyBase string) string {

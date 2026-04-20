@@ -18,6 +18,8 @@ interface UseInstanceDesktopAccessOptions {
 
 const DEFAULT_REFRESH_LEAD_MS = 5 * 60 * 1000;
 const DEFAULT_RETRY_DELAY_MS = 5000;
+const MAX_RETRY_DELAY_MS = 30 * 1000;
+const RETRY_JITTER_RATIO = 0.25;
 const FRAME_ERROR_PATTERN =
   /(access token expired or invalid|access token required|token does not match instance|failed to proxy request)/i;
 
@@ -27,7 +29,31 @@ type DesktopSessionSnapshot = {
   hasEstablishedSession: boolean;
 };
 
+type DesktopAccessResponse = Awaited<
+  ReturnType<typeof instanceService.generateAccessToken>
+>;
+
 const desktopSessionStore = new Map<number, DesktopSessionSnapshot>();
+const accessRequestStore = new Map<number, Promise<DesktopAccessResponse>>();
+
+function requestDesktopAccess(
+  instanceId: number,
+): Promise<DesktopAccessResponse> {
+  const existingRequest = accessRequestStore.get(instanceId);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = instanceService.generateAccessToken(instanceId);
+  const trackedRequest = request.finally(() => {
+    if (accessRequestStore.get(instanceId) === trackedRequest) {
+      accessRequestStore.delete(instanceId);
+    }
+  });
+
+  accessRequestStore.set(instanceId, trackedRequest);
+  return trackedRequest;
+}
 
 export function useInstanceDesktopAccess({
   instanceId,
@@ -63,6 +89,7 @@ export function useInstanceDesktopAccess({
   );
   const retryTimeoutRef = useRef<number | null>(null);
   const refreshTimeoutRef = useRef<number | null>(null);
+  const retryAttemptRef = useRef(0);
   const refreshAccessRef = useRef<
     ((options?: RefreshAccessOptions) => Promise<void>) | null
   >(null);
@@ -127,6 +154,7 @@ export function useInstanceDesktopAccess({
     embedUrlRef.current = null;
     expiresAtRef.current = null;
     hasEstablishedSessionRef.current = false;
+    retryAttemptRef.current = 0;
     if (instanceId) {
       desktopSessionStore.delete(instanceId);
     }
@@ -153,13 +181,27 @@ export function useInstanceDesktopAccess({
       return;
     }
 
+    const attempt = retryAttemptRef.current + 1;
+    retryAttemptRef.current = attempt;
+    const exponentialDelay = Math.min(
+      retryDelayMs * 2 ** (attempt - 1),
+      MAX_RETRY_DELAY_MS,
+    );
+    const jitterWindow = Math.floor(exponentialDelay * RETRY_JITTER_RATIO);
+    const nextDelay = Math.max(
+      retryDelayMs,
+      exponentialDelay -
+        jitterWindow +
+        Math.floor(Math.random() * (jitterWindow * 2 + 1)),
+    );
+
     retryTimeoutRef.current = window.setTimeout(() => {
       retryTimeoutRef.current = null;
       void refreshAccessRef.current?.({
         forceReload: !embedUrlRef.current,
         silent: true,
       });
-    }, retryDelayMs);
+    }, nextDelay);
   }, [clearRetryTimeout, instanceId, isRunning, retryDelayMs, shouldPreserveSession]);
 
   const refreshAccess = useCallback(
@@ -183,7 +225,7 @@ export function useInstanceDesktopAccess({
       }
 
       try {
-        const data = await instanceService.generateAccessToken(instanceId);
+        const data = await requestDesktopAccess(instanceId);
         if (requestId !== requestIdRef.current) {
           return;
         }
@@ -193,6 +235,7 @@ export function useInstanceDesktopAccess({
         const previousEmbedUrl = embedUrlRef.current;
 
         expiresAtRef.current = nextExpiresAt;
+        retryAttemptRef.current = 0;
         setExpiresAt(nextExpiresAt);
         setError(null);
 
