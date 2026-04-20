@@ -97,9 +97,14 @@ const SystemSettingsPage: React.FC = () => {
       return;
     }
 
-    const duplicate = cards.some((item) => item.local_id !== card.local_id && item.instance_type === card.instance_type);
+    const normalizedImage = card.image.trim().toLowerCase();
+    const duplicate = cards.some((item) =>
+      item.local_id !== card.local_id &&
+      item.instance_type === card.instance_type &&
+      item.image.trim().toLowerCase() === normalizedImage,
+    );
     if (duplicate) {
-      updateCard(card.local_id, { error: t('systemSettingsPage.duplicateType') });
+      updateCard(card.local_id, { error: t('systemSettingsPage.duplicateImage') });
       return;
     }
 
@@ -107,6 +112,7 @@ const SystemSettingsPage: React.FC = () => {
 
     try {
       const saved = await systemSettingsService.saveImageSetting({
+        id: card.id,
         instance_type: card.instance_type,
         display_name: card.display_name,
         image: card.image.trim(),
@@ -136,7 +142,7 @@ const SystemSettingsPage: React.FC = () => {
 
     updateCard(card.local_id, { saving: true, error: null });
     try {
-      await systemSettingsService.deleteImageSetting(card.instance_type);
+      await systemSettingsService.deleteImageSetting(card.id ?? card.instance_type);
       setCards((current) => current.filter((item) => item.local_id !== card.local_id));
     } catch (error: any) {
       updateCard(card.local_id, {
@@ -178,10 +184,6 @@ const SystemSettingsPage: React.FC = () => {
           ) : (
             <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-2">
               {cards.map((card) => {
-                const selectableTypes = IMAGE_TYPE_OPTIONS.filter((option) => (
-                  option.value === card.instance_type || !usedTypes.includes(option.value)
-                ));
-
                 const defaultImage = IMAGE_TYPE_OPTIONS.find((option) => option.value === card.instance_type)?.defaultImage ?? '-';
 
                 return (
@@ -194,7 +196,7 @@ const SystemSettingsPage: React.FC = () => {
                           onChange={(event) => updateCard(card.local_id, { instance_type: event.target.value })}
                           className="app-input mt-1 block w-full"
                         >
-                          {selectableTypes.map((option) => (
+                          {IMAGE_TYPE_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>

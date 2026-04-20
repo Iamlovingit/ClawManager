@@ -16,7 +16,10 @@ import type { OpenClawConfigCompilePreview } from "../../types/openclawConfig";
 import type { Skill } from "../../types/skill";
 import type { UserQuota } from "../../types/user";
 import { useI18n } from "../../contexts/I18nContext";
-import { systemSettingsService } from "../../services/systemSettingsService";
+import {
+  systemSettingsService,
+  type SystemImageSetting,
+} from "../../services/systemSettingsService";
 
 type BuiltInEnvTemplate = {
   key: string;
@@ -259,6 +262,11 @@ const getPresetDescription = (
   return keys ? t(keys.description) : fallback;
 };
 
+const getRuntimeImageOptionKey = (item: SystemImageSetting): string =>
+  item.id != null
+    ? `runtime-image:${item.id}`
+    : `runtime-image:${item.instance_type}:${item.image}`;
+
 const CreateInstancePage: React.FC = () => {
   const { user } = useAuth();
   const { t } = useI18n();
@@ -269,6 +277,10 @@ const CreateInstancePage: React.FC = () => {
   const [step, setStep] = useState(1);
   const [submitArmed, setSubmitArmed] = useState(false);
   const [availableTypes, setAvailableTypes] = useState(INSTANCE_TYPES);
+  const [runtimeImageSettings, setRuntimeImageSettings] = useState<
+    SystemImageSetting[]
+  >([]);
+  const [selectedRuntimeImageKey, setSelectedRuntimeImageKey] = useState("");
   const [quota, setQuota] = useState<UserQuota | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [openClawImportFile, setOpenClawImportFile] = useState<File | null>(
@@ -326,6 +338,13 @@ const CreateInstancePage: React.FC = () => {
       !Object.prototype.hasOwnProperty.call(builtinEnvOverrides, template.key),
   );
   const selectedType = availableTypes.find((item) => item.id === formData.type);
+  const runtimeImageOptions = runtimeImageSettings.filter(
+    (item) => item.is_enabled !== false && item.instance_type === formData.type,
+  );
+  const selectedRuntimeImage =
+    runtimeImageOptions.find(
+      (item) => getRuntimeImageOptionKey(item) === selectedRuntimeImageKey,
+    ) ?? runtimeImageOptions[0] ?? null;
 
   const getCreateErrorMessage = (rawError?: string) => {
     if (rawError === "instance name already exists") {
@@ -338,10 +357,10 @@ const CreateInstancePage: React.FC = () => {
     const loadAvailableTypes = async () => {
       try {
         const items = await systemSettingsService.getImageSettings();
+        const enabledItems = items.filter((item) => item.is_enabled !== false);
+        setRuntimeImageSettings(enabledItems);
         const enabledTypes = new Set(
-          items
-            .filter((item) => item.is_enabled !== false)
-            .map((item) => item.instance_type),
+          enabledItems.map((item) => item.instance_type),
         );
 
         const filtered = INSTANCE_TYPES.filter((type) =>
@@ -362,8 +381,11 @@ const CreateInstancePage: React.FC = () => {
               os_version: first.defaultVersion,
             };
           });
+        } else {
+          setAvailableTypes([]);
         }
       } catch {
+        setRuntimeImageSettings([]);
         setAvailableTypes(INSTANCE_TYPES);
       }
     };
@@ -393,6 +415,21 @@ const CreateInstancePage: React.FC = () => {
 
     void loadSkills();
   }, []);
+
+  useEffect(() => {
+    if (runtimeImageOptions.length === 0) {
+      setSelectedRuntimeImageKey("");
+      return;
+    }
+
+    setSelectedRuntimeImageKey((current) =>
+      runtimeImageOptions.some(
+        (item) => getRuntimeImageOptionKey(item) === current,
+      )
+        ? current
+        : getRuntimeImageOptionKey(runtimeImageOptions[0]),
+    );
+  }, [runtimeImageOptions]);
 
   useEffect(() => {
     const nextTotalPages = Math.max(
@@ -584,6 +621,8 @@ const CreateInstancePage: React.FC = () => {
       setError(null);
       const createPayload: CreateInstanceRequest = {
         ...formData,
+        image_registry: selectedRuntimeImage?.image,
+        image_tag: selectedRuntimeImage ? undefined : formData.image_tag,
         environment_overrides: overrides,
         skill_ids: formData.type === "openclaw" ? selectedSkillIds : undefined,
         openclaw_config_plan:
@@ -624,7 +663,7 @@ const CreateInstancePage: React.FC = () => {
 
   const canProceed = () => {
     if (step === 1) return formData.name.length >= 3;
-    if (step === 2) return true;
+    if (step === 2) return availableTypes.length > 0;
     return true;
   };
 
@@ -1007,6 +1046,66 @@ const CreateInstancePage: React.FC = () => {
                     )}
                   </div>
                 ))}
+              </div>
+
+              <div className="mt-6 rounded-[24px] border border-[#ead8cf] bg-[rgba(255,248,245,0.72)] p-5">
+                <div>
+                  <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-[#b46c50]">
+                    {t("instances.instanceImage")}
+                  </h3>
+                  <p className="mt-1 text-sm text-gray-500">
+                    {t("instances.runtimeImageSelectionHint")}
+                  </p>
+                </div>
+
+                {runtimeImageOptions.length === 0 ? (
+                  <p className="mt-4 text-sm text-gray-500">
+                    {t("instances.runtimeImageUnavailable")}
+                  </p>
+                ) : (
+                  <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    {runtimeImageOptions.map((item) => {
+                      const optionKey = getRuntimeImageOptionKey(item);
+                      const selected = optionKey === selectedRuntimeImageKey;
+
+                      return (
+                        <button
+                          key={optionKey}
+                          type="button"
+                          onClick={() => setSelectedRuntimeImageKey(optionKey)}
+                          className={`rounded-[20px] border p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-[0_24px_56px_-42px_rgba(72,44,24,0.55)] ${
+                            selected
+                              ? "border-indigo-500 bg-white ring-2 ring-indigo-500"
+                              : "border-[#ead8cf] bg-white"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <h4 className="text-sm font-semibold text-gray-900">
+                                {item.display_name}
+                              </h4>
+                              <p className="mt-1 text-xs uppercase tracking-[0.16em] text-[#b46c50]">
+                                {getInstanceTypeLabel(
+                                  t,
+                                  item.instance_type,
+                                  item.instance_type,
+                                )}
+                              </p>
+                            </div>
+                            {selected && (
+                              <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-700">
+                                ✓
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-3 break-all rounded-2xl bg-[#f8f5f2] px-3 py-2 font-mono text-xs text-[#5f5957]">
+                            {item.image}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1797,6 +1896,21 @@ const CreateInstancePage: React.FC = () => {
                             )
                           : formData.type}
                       </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm font-medium text-gray-500">
+                        {t("instances.instanceImage")}
+                      </dt>
+                      <dd className="mt-1 text-sm text-gray-900">
+                        {selectedRuntimeImage?.display_name ||
+                          selectedRuntimeImage?.image ||
+                          t("instances.runtimeImageUnavailable")}
+                      </dd>
+                      {selectedRuntimeImage?.image && (
+                        <p className="mt-1 break-all font-mono text-xs text-gray-500">
+                          {selectedRuntimeImage.image}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <dt className="text-sm font-medium text-gray-500">

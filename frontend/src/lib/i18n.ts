@@ -1483,6 +1483,8 @@ export const translations: Record<Locale, TranslationTree> = {
       loadFailed: "Failed to load image settings",
       requiredFields: "Instance type and image are required.",
       duplicateType: "This instance type already has a card.",
+      duplicateImage:
+        "This runtime image already exists under the selected instance type.",
       saveFailed: "Failed to save image setting",
       deleteFailed: "Failed to delete image setting",
       runtimeImageCards: "Runtime Image Cards",
@@ -1585,6 +1587,10 @@ export const translations: Record<Locale, TranslationTree> = {
         "Are you sure you want to delete this instance? This action cannot be undone.",
       details: "Details",
       instanceImage: "Instance Image",
+      runtimeImageSelectionHint:
+        "Choose which runtime image version should be used for this instance type.",
+      runtimeImageUnavailable:
+        "No enabled runtime image is currently available for this instance type.",
       operatingSystem: "Operating System",
       access: "Access",
       portalView: "Portal View",
@@ -2645,6 +2651,7 @@ export const translations: Record<Locale, TranslationTree> = {
       loadFailed: "加载镜像设置失败",
       requiredFields: "实例类型和镜像地址为必填项。",
       duplicateType: "这个实例类型已经有一张卡片。",
+      duplicateImage: "该实例类型下已经存在相同的运行时镜像。",
       saveFailed: "保存镜像设置失败",
       deleteFailed: "删除镜像设置失败",
       runtimeImageCards: "运行时镜像卡片",
@@ -2741,6 +2748,8 @@ export const translations: Record<Locale, TranslationTree> = {
       confirmDelete: "确定要删除这个实例吗？此操作不可撤销。",
       details: "详情",
       instanceImage: "实例镜像",
+      runtimeImageSelectionHint: "选择该实例类型实际要使用的运行时镜像版本。",
+      runtimeImageUnavailable: "当前这个实例类型没有可用的运行时镜像。",
       operatingSystem: "操作系统",
       access: "访问",
       portalView: "门户视图",
@@ -3791,6 +3800,8 @@ export const translations: Record<Locale, TranslationTree> = {
       loadFailed: "イメージ設定の読み込みに失敗しました",
       requiredFields: "インスタンスタイプとイメージは必須です。",
       duplicateType: "このインスタンスタイプには既にカードがあります。",
+      duplicateImage:
+        "選択したインスタンスタイプには同じランタイムイメージが既に存在します。",
       saveFailed: "イメージ設定の保存に失敗しました",
       deleteFailed: "イメージ設定の削除に失敗しました",
       runtimeImageCards: "ランタイムイメージカード",
@@ -3893,6 +3904,10 @@ export const translations: Record<Locale, TranslationTree> = {
         "このインスタンスを削除してもよろしいですか？この操作は元に戻せません。",
       details: "詳細",
       instanceImage: "インスタンスイメージ",
+      runtimeImageSelectionHint:
+        "このインスタンスタイプで使用するランタイムイメージのバージョンを選択してください。",
+      runtimeImageUnavailable:
+        "このインスタンスタイプで利用可能なランタイムイメージは現在ありません。",
       operatingSystem: "オペレーティングシステム",
       access: "アクセス",
       portalView: "ポータル表示",
@@ -4979,6 +4994,8 @@ export const translations: Record<Locale, TranslationTree> = {
       loadFailed: "이미지 설정을 불러오지 못했습니다",
       requiredFields: "인스턴스 유형과 이미지는 필수입니다.",
       duplicateType: "이 인스턴스 유형에는 이미 카드가 있습니다.",
+      duplicateImage:
+        "선택한 인스턴스 유형에 동일한 런타임 이미지가 이미 있습니다.",
       saveFailed: "이미지 설정을 저장하지 못했습니다",
       deleteFailed: "이미지 설정을 삭제하지 못했습니다",
       runtimeImageCards: "런타임 이미지 카드",
@@ -5078,6 +5095,10 @@ export const translations: Record<Locale, TranslationTree> = {
         "이 인스턴스를 정말 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
       details: "세부정보",
       instanceImage: "인스턴스 이미지",
+      runtimeImageSelectionHint:
+        "이 인스턴스 유형에 사용할 런타임 이미지 버전을 선택하세요.",
+      runtimeImageUnavailable:
+        "이 인스턴스 유형에 현재 사용할 수 있는 런타임 이미지가 없습니다.",
       operatingSystem: "운영체제",
       access: "접속",
       portalView: "포털 보기",
@@ -6169,6 +6190,8 @@ export const translations: Record<Locale, TranslationTree> = {
       loadFailed: "Bildeinstellungen konnten nicht geladen werden",
       requiredFields: "Instanztyp und Image sind erforderlich.",
       duplicateType: "Für diesen Instanztyp existiert bereits eine Karte.",
+      duplicateImage:
+        "Dieses Runtime-Image existiert für den gewählten Instanztyp bereits.",
       saveFailed: "Bildeinstellung konnte nicht gespeichert werden",
       deleteFailed: "Bildeinstellung konnte nicht gelöscht werden",
       runtimeImageCards: "Runtime-Image-Karten",
@@ -6272,6 +6295,10 @@ export const translations: Record<Locale, TranslationTree> = {
         "Möchten Sie diese Instanz wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
       details: "Details",
       instanceImage: "Instanz-Image",
+      runtimeImageSelectionHint:
+        "Wählen Sie aus, welche Runtime-Image-Version für diesen Instanztyp verwendet werden soll.",
+      runtimeImageUnavailable:
+        "Für diesen Instanztyp ist derzeit kein aktiviertes Runtime-Image verfügbar.",
       operatingSystem: "Betriebssystem",
       access: "Zugriff",
       portalView: "Portalansicht",
