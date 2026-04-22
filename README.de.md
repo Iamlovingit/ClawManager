@@ -65,6 +65,14 @@ Wichtige aktuelle Produkt- und Dokumentations-Updates.
   </a>
 </p>
 
+## WeChat-Community-Gruppe
+
+Tritt der ClawManager Open-Source-Community auf WeChat bei, um Produkt-Updates zu verfolgen, Nutzungserfahrungen auszutauschen und mit Mitwirkenden ins Gespraech zu kommen.
+
+<p align="center">
+  <img src="./docs/main/clawmanager_group_chat.jpg" alt="QR-Code zur ClawManager WeChat-Gruppe" width="300" />
+</p>
+
 <a id="product-tour"></a>
 ## Produktueberblick
 

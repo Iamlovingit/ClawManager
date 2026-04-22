@@ -66,6 +66,14 @@ Recent highlights from the latest product and documentation updates.
 </p>
 
 
+## Community WeChat Group
+
+Join the ClawManager open source community on WeChat for product updates, usage discussion, and contributor collaboration.
+
+<p align="center">
+  <img src="./docs/main/clawmanager_group_chat.jpg" alt="ClawManager WeChat group QR code" width="300" />
+</p>
+
 ## Product Tour
 
 ClawManager brings AI agent instance operations to Kubernetes and layers three higher-level control planes on top of that runtime foundation. Teams use it to govern AI access, orchestrate runtime behavior through agents, and manage reusable channels and skills with scanning and bundle-based delivery.
