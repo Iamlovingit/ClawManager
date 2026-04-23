@@ -65,6 +65,14 @@
   </a>
 </p>
 
+## 社区微信群
+
+欢迎加入 ClawManager 开源社区微信群，获取产品更新、交流使用经验，并与贡献者一起讨论共建。
+
+<p align="center">
+  <img src="./docs/main/clawmanager_group_chat.jpg" alt="ClawManager 微信群二维码" width="300" />
+</p>
+
 <a id="product-tour"></a>
 ## 产品介绍
 

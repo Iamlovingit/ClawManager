@@ -65,6 +65,14 @@
   </a>
 </p>
 
+## WeChatコミュニティグループ
+
+ClawManager オープンソースコミュニティの WeChat グループです。プロダクト更新の確認、使い方の相談、コントリビューター同士の交流にご活用ください。
+
+<p align="center">
+  <img src="./docs/main/clawmanager_group_chat.jpg" alt="ClawManager WeChatグループのQRコード" width="300" />
+</p>
+
 <a id="product-tour"></a>
 ## 製品紹介
 

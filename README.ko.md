@@ -65,6 +65,14 @@
   </a>
 </p>
 
+## WeChat 커뮤니티 그룹
+
+ClawManager 오픈소스 커뮤니티 WeChat 그룹에 참여해 제품 업데이트를 확인하고, 사용 경험을 나누며, 기여자들과 함께 소통해 보세요.
+
+<p align="center">
+  <img src="./docs/main/clawmanager_group_chat.jpg" alt="ClawManager WeChat 그룹 QR 코드" width="300" />
+</p>
+
 <a id="product-tour"></a>
 ## 제품 소개
 
