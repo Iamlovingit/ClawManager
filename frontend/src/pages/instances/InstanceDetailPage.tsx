@@ -23,6 +23,30 @@ const RUNTIME_BURST_WINDOW_MS = 15000;
 const METRIC_WINDOW_MS = 5 * 60 * 1000;
 const INSTANCE_SKILL_PAGE_SIZE = 5;
 
+// describeOpenClawError extracts a user-facing message from an axios error.
+// When the server returned a structured JSON body it surfaces the `error`
+// field; otherwise it falls back to the HTTP status (e.g. plain-HTML 413
+// from nginx) or the raw error message.
+function describeOpenClawError(err: any): string {
+  const data = err?.response?.data;
+  if (typeof data === "string" && data.trim() !== "") {
+    // Strip HTML tags so nginx's default error page is not dumped verbatim.
+    const stripped = data.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    if (stripped !== "") return stripped;
+  }
+  if (data && typeof data === "object" && typeof data.error === "string") {
+    return data.error;
+  }
+  const status = err?.response?.status;
+  if (status === 413) {
+    return "archive too large (HTTP 413)";
+  }
+  if (typeof status === "number") {
+    return `HTTP ${status}`;
+  }
+  return err?.message || "unknown error";
+}
+
 type TimelineItem = {
   id: string;
   title: string;
@@ -518,7 +542,11 @@ const InstanceDetailPage: React.FC = () => {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert(err.response?.data?.error || t("instances.exportOpenClaw"));
+      alert(
+        t("instances.exportOpenClawFailed", {
+          message: describeOpenClawError(err),
+        }),
+      );
     } finally {
       setActionLoading(null);
     }
@@ -531,9 +559,13 @@ const InstanceDetailPage: React.FC = () => {
       setActionLoading("import-openclaw");
       await instanceService.importOpenClawWorkspace(instance.id, file);
       await fetchRuntime(instance.id, { background: true });
-      alert(t("instances.importOpenClaw"));
+      alert(t("instances.importOpenClawSuccess"));
     } catch (err: any) {
-      alert(err.response?.data?.error || t("instances.importOpenClaw"));
+      alert(
+        t("instances.importOpenClawFailed", {
+          message: describeOpenClawError(err),
+        }),
+      );
     } finally {
       if (importInputRef.current) {
         importInputRef.current.value = "";
