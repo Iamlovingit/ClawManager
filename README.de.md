@@ -89,15 +89,20 @@ Es eignet sich besonders fuer:
 <a id="runtime-integrations"></a>
 ## Runtime-Integrationen
 
-ClawManager unterstuetzt jetzt OpenClaw und Hermes als verwaltete Runtime-Integrationen. Hermes wird auf der Webtop-Basis integriert: Desktop-Zugriff laeuft ueber Port `3001`, persistente Daten liegen unter `/config/.hermes`, und der eingebettete Hermes agent verbindet sich mit ClawManager, um Runtime-Status, Health, Metriken, Commands, channel-Injection, skill-Injection und Skill-Package-Synchronisierung zu verarbeiten.
+ClawManager unterstuetzt derzeit die folgenden verwalteten Runtimes:
 
-Hermes-Instanzen erhalten die gleichen plattformverwalteten Faehigkeiten wie OpenClaw-artige Workspaces:
+- <img src="frontend/public/openclaw.png" alt="OpenClaw icon" width="18" /> `OpenClaw`: die standardmaessige OpenClaw-artige Workspace-Runtime fuer von ClawManager verwaltete Desktop-Instanzen
+- <img src="frontend/public/hermes.png" alt="Hermes icon" width="18" /> `Hermes`: eine Webtop-basierte Runtime-Integration mit persistentem `.hermes`-Workspace und eingebettetem Hermes agent
 
-- AI-Gateway-Injection ueber OpenAI-kompatible Umgebungsvariablen
-- Agent-Bootstrap und sessionbasierte Registrierung
-- channel- und skill-Bootstrap-Payloads fuer Runtime-seitige Konfiguration
-- `install_skill`, `collect_skill_package`, Health-Check- und System-Info-Commands
-- `.hermes` Workspace-Import und -Export fuer persistente Runtime-Daten
+Runtime-Vorschau:
+
+**<img src="frontend/public/openclaw.png" alt="OpenClaw icon" width="18" /> OpenClaw**
+
+![openclaw](./docs/images/openclaw.png)
+
+**<img src="frontend/public/hermes.png" alt="Hermes icon" width="18" /> Hermes**
+
+![hermes](./docs/images/hermes.png)
 
 Runtime-Autoren koennen dem [Hermes Runtime Guide](./docs/hermes-runtime-agent-development.md), dem [Generic Runtime Agent Integration Guide](./docs/runtime-agent-integration-guide.md) und der [Skill Content MD5 Spec](./docs/skill-content-md5-spec.md) folgen, um kompatible Agents zu bauen.
 

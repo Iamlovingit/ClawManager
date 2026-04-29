@@ -89,15 +89,20 @@ ClawManager は、AI エージェントインスタンスの運用を Kubernetes
 <a id="runtime-integrations"></a>
 ## Runtime 連携
 
-ClawManager は、OpenClaw と Hermes の両方を管理対象 Runtime としてサポートします。Hermes は Webtop ベースラインで統合されます。デスクトップアクセスは `3001` ポートを使い、永続データは `/config/.hermes` に保存され、内蔵 Hermes agent が ClawManager に接続してランタイム状態、ヘルス、メトリクスを報告し、コマンド、channel 注入、skill 注入、skill パッケージ同期を処理します。
+ClawManager は現在、次の管理対象 Runtime をサポートします。
 
-Hermes インスタンスでは、OpenClaw スタイルのワークスペースと同じプラットフォーム管理機能を利用できます。
+- <img src="frontend/public/openclaw.png" alt="OpenClaw icon" width="18" /> `OpenClaw`: ClawManager が管理するデスクトップインスタンスで使われる標準の OpenClaw スタイル Runtime
+- <img src="frontend/public/hermes.png" alt="Hermes icon" width="18" /> `Hermes`: 永続化された `.hermes` ワークスペースと内蔵 Hermes agent を備えた Webtop ベースの Runtime 連携
 
-- OpenAI 互換環境変数による AI Gateway 注入
-- bootstrap token と session token による Agent 登録
-- Runtime 側設定向けの channel と skill ブートストラップ payload
-- `install_skill`、`collect_skill_package`、ヘルスチェック、システム情報収集コマンド
-- 永続 Runtime データを移行するための `.hermes` ワークスペースのインポート/エクスポート
+Runtime プレビュー:
+
+**<img src="frontend/public/openclaw.png" alt="OpenClaw icon" width="18" /> OpenClaw**
+
+![openclaw](./docs/images/openclaw.png)
+
+**<img src="frontend/public/hermes.png" alt="Hermes icon" width="18" /> Hermes**
+
+![hermes](./docs/images/hermes.png)
 
 Runtime 開発者は、[Hermes Runtime Guide](./docs/hermes-runtime-agent-development.md)、[Generic Runtime Agent Integration Guide](./docs/runtime-agent-integration-guide.md)、[Skill Content MD5 Spec](./docs/skill-content-md5-spec.md) を参照して互換 agent を実装できます。
 

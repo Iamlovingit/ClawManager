@@ -89,15 +89,20 @@ It is designed for:
 <a id="runtime-integrations"></a>
 ## Runtime Integrations
 
-ClawManager now supports both OpenClaw and Hermes as managed runtime integrations. Hermes is integrated on the Webtop baseline: desktop access uses port `3001`, persistent data lives under `/config/.hermes`, and the embedded Hermes agent connects back to ClawManager for runtime status, health, metrics, commands, channel injection, skill injection, and skill package synchronization.
+ClawManager currently supports the following managed runtimes:
 
-Hermes instances receive the same platform-managed capabilities as OpenClaw-style workspaces:
+- <img src="frontend/public/openclaw.png" alt="OpenClaw icon" width="18" /> `OpenClaw`: the default OpenClaw-style workspace runtime used by ClawManager-managed desktop instances
+- <img src="frontend/public/hermes.png" alt="Hermes icon" width="18" /> `Hermes`: a Webtop-based runtime integration with a persistent `.hermes` workspace and embedded Hermes agent
 
-- AI Gateway environment injection through OpenAI-compatible variables
-- Agent bootstrap and session-based registration
-- channel and skill bootstrap payloads for runtime-side configuration
-- `install_skill`, `collect_skill_package`, health check, and system info commands
-- `.hermes` workspace import and export for persistent runtime data
+Runtime previews:
+
+**<img src="frontend/public/openclaw.png" alt="OpenClaw icon" width="18" /> OpenClaw**
+
+![openclaw](./docs/images/openclaw.png)
+
+**<img src="frontend/public/hermes.png" alt="Hermes icon" width="18" /> Hermes**
+
+![hermes](./docs/images/hermes.png)
 
 Runtime authors can follow the [Hermes Runtime Guide](./docs/hermes-runtime-agent-development.md), the [Generic Runtime Agent Integration Guide](./docs/runtime-agent-integration-guide.md), and the [Skill Content MD5 Spec](./docs/skill-content-md5-spec.md) to build compatible agents.
 
