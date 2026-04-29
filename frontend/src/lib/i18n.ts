@@ -1682,6 +1682,9 @@ export const translations: Record<Locale, TranslationTree> = {
       openClawWorkspace: "OpenClaw Workspace",
       openClawWorkspaceDesc:
         "Import or export the `.openclaw` folder as a `.tar.gz` archive up to 50 MiB.",
+      runtimeWorkspace: "{runtime} Workspace",
+      runtimeWorkspaceDesc:
+        "Import or export the `{directory}` folder as a `.tar.gz` archive up to 50 MiB.",
       workspaceReady: "Ready",
       workspacePaused: "Paused",
       exportingOpenClaw: "Exporting...",
@@ -1689,9 +1692,19 @@ export const translations: Record<Locale, TranslationTree> = {
       importingOpenClaw: "Importing...",
       importOpenClaw: "Import .openclaw",
       importOpenClawSuccess: "OpenClaw workspace imported successfully.",
+      exportingRuntimeWorkspace: "Exporting...",
+      exportRuntimeWorkspace: "Export {directory}",
+      importingRuntimeWorkspace: "Importing...",
+      importRuntimeWorkspace: "Import {directory}",
+      importRuntimeWorkspaceSuccess:
+        "{runtime} workspace imported successfully.",
       openClawArchiveTooLarge: "Archive too large. Maximum size is 50 MiB.",
       importOpenClawFailed: "Failed to import .openclaw: {message}",
       exportOpenClawFailed: "Failed to export .openclaw: {message}",
+      importRuntimeWorkspaceFailed:
+        "Failed to import {directory}: {message}",
+      exportRuntimeWorkspaceFailed:
+        "Failed to export {directory}: {message}",
       memoryReserved: "Memory reserved",
       persistentStorage: "Persistent storage",
       gpuAttached: "GPU attached",
@@ -1705,10 +1718,14 @@ export const translations: Record<Locale, TranslationTree> = {
       optional: "Optional",
       changeOpenClawArchive: "Change .openclaw Archive",
       chooseOpenClawArchive: "Choose .openclaw Archive",
+      changeRuntimeArchive: "Change {directory} Archive",
+      chooseRuntimeArchive: "Choose {directory} Archive",
       remove: "Remove",
       selectedArchive: "Selected archive: {name}",
       noArchiveSelected:
         "No archive selected. The instance will be created with an empty .openclaw workspace.",
+      noRuntimeArchiveSelected:
+        "No archive selected. The instance will be created with an empty {directory} workspace.",
       quotaValidation: "Quota Validation",
       unableToLoadQuota:
         "Unable to load your quota. Create Instance stays disabled until quota is available.",
@@ -1738,6 +1755,10 @@ export const translations: Record<Locale, TranslationTree> = {
           label: "Webtop Desktop",
           description:
             "Browser-based Linux desktop proxied through ClawManager",
+        },
+        hermes: {
+          label: "Hermes Runtime",
+          description: "Hermes runtime built on the webtop desktop base",
         },
         custom: {
           label: "Custom Image",
@@ -1797,6 +1818,7 @@ export const translations: Record<Locale, TranslationTree> = {
         "{name} is a ClawManager built-in variable. Edit it in the built-in section instead.",
       duplicateEnvName: "Duplicate environment variable name: {name}",
       openClawInjection: "OpenClaw Injection",
+      runtimeInjection: "{runtime} Injection",
       selectedCount: "{count} selected",
       noReusableSkillsSelected: "No reusable skills selected.",
       noAvailableSkillsForInjection:
@@ -1812,6 +1834,7 @@ export const translations: Record<Locale, TranslationTree> = {
       archiveSkipsChannelInjection:
         "Archive mode skips resource-based channel injection.",
       compilingOpenClawPreview: "Compiling OpenClaw resource preview...",
+      compilingRuntimePreview: "Compiling runtime resource preview...",
       noChannelsSelectedForInjection: "No channels selected for injection.",
       skillInjection: "Skill Injection",
       envManagedProxyPath: "ClawManager managed proxy path",
@@ -2844,13 +2867,23 @@ export const translations: Record<Locale, TranslationTree> = {
       openClawWorkspace: "OpenClaw 工作区",
       openClawWorkspaceDesc:
         "可将 `.openclaw` 文件夹导入或导出为不超过 50 MiB 的 `.tar.gz` 压缩包。",
+      runtimeWorkspace: "{runtime} 工作区",
+      runtimeWorkspaceDesc:
+        "可将 `{directory}` 文件夹导入或导出为不超过 50 MiB 的 `.tar.gz` 压缩包。",
       workspaceReady: "可操作",
       workspacePaused: "未就绪",
       exportingOpenClaw: "正在导出...",
       exportOpenClaw: "导出 .openclaw",
       importingOpenClaw: "正在导入...",
       importOpenClaw: "导入 .openclaw",
+      exportingRuntimeWorkspace: "正在导出...",
+      exportRuntimeWorkspace: "导出 {directory}",
+      importingRuntimeWorkspace: "正在导入...",
+      importRuntimeWorkspace: "导入 {directory}",
+      importRuntimeWorkspaceSuccess: "{runtime} 工作区导入成功。",
       openClawArchiveTooLarge: "归档过大。最大大小为 50 MiB。",
+      importRuntimeWorkspaceFailed: "导入 {directory} 失败：{message}",
+      exportRuntimeWorkspaceFailed: "导出 {directory} 失败：{message}",
       memoryReserved: "预留内存",
       persistentStorage: "持久存储",
       gpuAttached: "GPU 数量",
@@ -2862,9 +2895,13 @@ export const translations: Record<Locale, TranslationTree> = {
       optional: "可选",
       changeOpenClawArchive: "更换 .openclaw 归档",
       chooseOpenClawArchive: "选择 .openclaw 归档",
+      changeRuntimeArchive: "更换 {directory} 归档",
+      chooseRuntimeArchive: "选择 {directory} 归档",
       remove: "移除",
       selectedArchive: "已选择归档：{name}",
       noArchiveSelected: "尚未选择归档。实例将以空的 .openclaw 工作区创建。",
+      noRuntimeArchiveSelected:
+        "尚未选择归档。实例将以空的 {directory} 工作区创建。",
       quotaValidation: "配额校验",
       unableToLoadQuota:
         "无法加载你的配额。在配额可用前，创建实例按钮会保持禁用。",
@@ -2893,6 +2930,10 @@ export const translations: Record<Locale, TranslationTree> = {
         webtop: {
           label: "Webtop 桌面",
           description: "通过 ClawManager 代理的浏览器 Linux 桌面",
+        },
+        hermes: {
+          label: "Hermes Runtime",
+          description: "基于 Webtop 桌面基础镜像构建的 Hermes 运行时",
         },
         custom: {
           label: "自定义镜像",
@@ -2951,6 +2992,7 @@ export const translations: Record<Locale, TranslationTree> = {
         "{name} 是 ClawManager 内置变量，请到内置变量区域中编辑。",
       duplicateEnvName: "环境变量名称重复：{name}",
       openClawInjection: "OpenClaw 注入",
+      runtimeInjection: "{runtime} 注入",
       selectedCount: "已选择 {count} 个",
       noReusableSkillsSelected: "还没有选择可复用技能。",
       noAvailableSkillsForInjection:
@@ -2964,6 +3006,7 @@ export const translations: Record<Locale, TranslationTree> = {
       channelInjection: "Channel 注入",
       archiveSkipsChannelInjection: "归档模式会跳过基于资源的 Channel 注入。",
       compilingOpenClawPreview: "正在生成 OpenClaw 资源预览...",
+      compilingRuntimePreview: "正在生成运行时资源预览...",
       noChannelsSelectedForInjection: "还没有选择用于注入的 Channel。",
       skillInjection: "技能注入",
       envManagedProxyPath: "ClawManager 管理的代理路径",
@@ -4010,6 +4053,9 @@ export const translations: Record<Locale, TranslationTree> = {
       openClawWorkspace: "OpenClaw ワークスペース",
       openClawWorkspaceDesc:
         "`.openclaw` フォルダーを 50 MiB までの `.tar.gz` アーカイブとしてインポートまたはエクスポートできます。",
+      runtimeWorkspace: "{runtime} ワークスペース",
+      runtimeWorkspaceDesc:
+        "`{directory}` フォルダーを 50 MiB までの `.tar.gz` アーカイブとしてインポートまたはエクスポートできます。",
       workspaceReady: "利用可能",
       workspacePaused: "停止中",
       exportingOpenClaw: "エクスポート中...",
@@ -4017,9 +4063,19 @@ export const translations: Record<Locale, TranslationTree> = {
       importingOpenClaw: "インポート中...",
       importOpenClaw: ".openclaw をインポート",
       importOpenClawSuccess: "OpenClaw ワークスペースをインポートしました。",
+      exportingRuntimeWorkspace: "エクスポート中...",
+      exportRuntimeWorkspace: "{directory} をエクスポート",
+      importingRuntimeWorkspace: "インポート中...",
+      importRuntimeWorkspace: "{directory} をインポート",
+      importRuntimeWorkspaceSuccess:
+        "{runtime} ワークスペースをインポートしました。",
       openClawArchiveTooLarge: "アーカイブが大きすぎます。最大サイズは 50 MiB です。",
       importOpenClawFailed: ".openclaw のインポートに失敗しました: {message}",
       exportOpenClawFailed: ".openclaw のエクスポートに失敗しました: {message}",
+      importRuntimeWorkspaceFailed:
+        "{directory} のインポートに失敗しました: {message}",
+      exportRuntimeWorkspaceFailed:
+        "{directory} のエクスポートに失敗しました: {message}",
       memoryReserved: "予約済みメモリ",
       persistentStorage: "永続ストレージ",
       gpuAttached: "GPU 接続数",
@@ -4033,10 +4089,14 @@ export const translations: Record<Locale, TranslationTree> = {
       optional: "任意",
       changeOpenClawArchive: ".openclaw アーカイブを変更",
       chooseOpenClawArchive: ".openclaw アーカイブを選択",
+      changeRuntimeArchive: "{directory} アーカイブを変更",
+      chooseRuntimeArchive: "{directory} アーカイブを選択",
       remove: "削除",
       selectedArchive: "選択済みアーカイブ: {name}",
       noArchiveSelected:
         "アーカイブが選択されていません。空の .openclaw ワークスペースでインスタンスが作成されます。",
+      noRuntimeArchiveSelected:
+        "アーカイブが選択されていません。空の {directory} ワークスペースでインスタンスが作成されます。",
       quotaValidation: "クォータ検証",
       unableToLoadQuota:
         "クォータを読み込めませんでした。クォータが取得できるまでインスタンス作成は無効のままです。",
@@ -4067,6 +4127,11 @@ export const translations: Record<Locale, TranslationTree> = {
           label: "Webtop デスクトップ",
           description:
             "ClawManager 経由でプロキシされるブラウザベースの Linux デスクトップ",
+        },
+        hermes: {
+          label: "Hermes Runtime",
+          description:
+            "Webtop デスクトップベースで構築された Hermes ランタイム",
         },
         custom: {
           label: "カスタムイメージ",
@@ -4126,6 +4191,7 @@ export const translations: Record<Locale, TranslationTree> = {
         "{name} は ClawManager の組み込み変数です。組み込みセクションで編集してください。",
       duplicateEnvName: "重複した環境変数名: {name}",
       openClawInjection: "OpenClaw 注入",
+      runtimeInjection: "{runtime} 注入",
       selectedCount: "{count} 件を選択",
       noReusableSkillsSelected: "再利用可能なスキルが選択されていません。",
       noAvailableSkillsForInjection:
@@ -4140,6 +4206,7 @@ export const translations: Record<Locale, TranslationTree> = {
       archiveSkipsChannelInjection:
         "アーカイブモードではリソースベースの Channel 注入をスキップします。",
       compilingOpenClawPreview: "OpenClaw リソースのプレビューを生成中...",
+      compilingRuntimePreview: "Runtime リソースのプレビューを生成中...",
       noChannelsSelectedForInjection: "注入する Channel が選択されていません。",
       skillInjection: "スキル注入",
       envManagedProxyPath: "ClawManager が管理するプロキシパス",
@@ -5200,6 +5267,9 @@ export const translations: Record<Locale, TranslationTree> = {
       openClawWorkspace: "OpenClaw 워크스페이스",
       openClawWorkspaceDesc:
         "`.openclaw` 폴더를 최대 50 MiB 크기의 `.tar.gz` 아카이브로 가져오거나 내보낼 수 있습니다.",
+      runtimeWorkspace: "{runtime} 워크스페이스",
+      runtimeWorkspaceDesc:
+        "`{directory}` 폴더를 최대 50 MiB 크기의 `.tar.gz` 아카이브로 가져오거나 내보낼 수 있습니다.",
       workspaceReady: "준비됨",
       workspacePaused: "대기 중",
       exportingOpenClaw: "내보내는 중...",
@@ -5207,9 +5277,17 @@ export const translations: Record<Locale, TranslationTree> = {
       importingOpenClaw: "가져오는 중...",
       importOpenClaw: ".openclaw 가져오기",
       importOpenClawSuccess: "OpenClaw 워크스페이스를 가져왔습니다.",
+      exportingRuntimeWorkspace: "내보내는 중...",
+      exportRuntimeWorkspace: "{directory} 내보내기",
+      importingRuntimeWorkspace: "가져오는 중...",
+      importRuntimeWorkspace: "{directory} 가져오기",
+      importRuntimeWorkspaceSuccess:
+        "{runtime} 워크스페이스를 가져왔습니다.",
       openClawArchiveTooLarge: "아카이브가 너무 큽니다. 최대 크기는 50 MiB입니다.",
       importOpenClawFailed: ".openclaw 가져오기 실패: {message}",
       exportOpenClawFailed: ".openclaw 내보내기 실패: {message}",
+      importRuntimeWorkspaceFailed: "{directory} 가져오기 실패: {message}",
+      exportRuntimeWorkspaceFailed: "{directory} 내보내기 실패: {message}",
       memoryReserved: "예약 메모리",
       persistentStorage: "영구 스토리지",
       gpuAttached: "연결된 GPU",
@@ -5223,10 +5301,14 @@ export const translations: Record<Locale, TranslationTree> = {
       optional: "선택",
       changeOpenClawArchive: ".openclaw 아카이브 변경",
       chooseOpenClawArchive: ".openclaw 아카이브 선택",
+      changeRuntimeArchive: "{directory} 아카이브 변경",
+      chooseRuntimeArchive: "{directory} 아카이브 선택",
       remove: "제거",
       selectedArchive: "선택된 아카이브: {name}",
       noArchiveSelected:
         "선택된 아카이브가 없습니다. 빈 .openclaw 워크스페이스로 인스턴스가 생성됩니다.",
+      noRuntimeArchiveSelected:
+        "선택된 아카이브가 없습니다. 빈 {directory} 워크스페이스로 인스턴스가 생성됩니다.",
       quotaValidation: "할당량 검증",
       unableToLoadQuota:
         "할당량을 불러올 수 없습니다. 할당량 정보를 받을 때까지 인스턴스 생성은 비활성화됩니다.",
@@ -5256,6 +5338,10 @@ export const translations: Record<Locale, TranslationTree> = {
           label: "Webtop 데스크톱",
           description:
             "ClawManager를 통해 프록시되는 브라우저 기반 Linux 데스크톱",
+        },
+        hermes: {
+          label: "Hermes Runtime",
+          description: "Webtop 데스크톱 기반으로 빌드된 Hermes 런타임",
         },
         custom: {
           label: "사용자 지정 이미지",
@@ -5314,6 +5400,7 @@ export const translations: Record<Locale, TranslationTree> = {
         "{name}은(는) ClawManager 내장 변수입니다. 내장 변수 섹션에서 편집하세요.",
       duplicateEnvName: "중복된 환경 변수 이름: {name}",
       openClawInjection: "OpenClaw 주입",
+      runtimeInjection: "{runtime} 주입",
       selectedCount: "{count}개 선택됨",
       noReusableSkillsSelected: "선택된 재사용 가능 스킬이 없습니다.",
       noAvailableSkillsForInjection:
@@ -5329,6 +5416,7 @@ export const translations: Record<Locale, TranslationTree> = {
       archiveSkipsChannelInjection:
         "아카이브 모드는 리소스 기반 Channel 주입을 건너뜁니다.",
       compilingOpenClawPreview: "OpenClaw 리소스 미리보기를 생성하는 중...",
+      compilingRuntimePreview: "Runtime 리소스 미리보기를 생성하는 중...",
       noChannelsSelectedForInjection: "주입할 Channel 이 선택되지 않았습니다.",
       skillInjection: "스킬 주입",
       envManagedProxyPath: "ClawManager가 관리하는 프록시 경로",
@@ -6407,6 +6495,9 @@ export const translations: Record<Locale, TranslationTree> = {
       openClawWorkspace: "OpenClaw-Arbeitsbereich",
       openClawWorkspaceDesc:
         "Importieren oder exportieren Sie den Ordner `.openclaw` als `.tar.gz`-Archiv bis 50 MiB.",
+      runtimeWorkspace: "{runtime}-Arbeitsbereich",
+      runtimeWorkspaceDesc:
+        "Importieren oder exportieren Sie den Ordner `{directory}` als `.tar.gz`-Archiv bis 50 MiB.",
       workspaceReady: "Bereit",
       workspacePaused: "Pausiert",
       exportingOpenClaw: "Export wird erstellt...",
@@ -6414,9 +6505,19 @@ export const translations: Record<Locale, TranslationTree> = {
       importingOpenClaw: "Import läuft...",
       importOpenClaw: ".openclaw importieren",
       importOpenClawSuccess: "OpenClaw-Arbeitsbereich erfolgreich importiert.",
+      exportingRuntimeWorkspace: "Export wird erstellt...",
+      exportRuntimeWorkspace: "{directory} exportieren",
+      importingRuntimeWorkspace: "Import läuft...",
+      importRuntimeWorkspace: "{directory} importieren",
+      importRuntimeWorkspaceSuccess:
+        "{runtime}-Arbeitsbereich erfolgreich importiert.",
       openClawArchiveTooLarge: "Archiv zu groß. Die maximale Größe beträgt 50 MiB.",
       importOpenClawFailed: ".openclaw-Import fehlgeschlagen: {message}",
       exportOpenClawFailed: ".openclaw-Export fehlgeschlagen: {message}",
+      importRuntimeWorkspaceFailed:
+        "{directory}-Import fehlgeschlagen: {message}",
+      exportRuntimeWorkspaceFailed:
+        "{directory}-Export fehlgeschlagen: {message}",
       memoryReserved: "Reservierter Speicher",
       persistentStorage: "Persistenter Speicher",
       gpuAttached: "Zugewiesene GPU",
@@ -6430,10 +6531,14 @@ export const translations: Record<Locale, TranslationTree> = {
       optional: "Optional",
       changeOpenClawArchive: ".openclaw-Archiv ändern",
       chooseOpenClawArchive: ".openclaw-Archiv auswählen",
+      changeRuntimeArchive: "{directory}-Archiv ändern",
+      chooseRuntimeArchive: "{directory}-Archiv auswählen",
       remove: "Entfernen",
       selectedArchive: "Ausgewähltes Archiv: {name}",
       noArchiveSelected:
         "Kein Archiv ausgewählt. Die Instanz wird mit einem leeren .openclaw-Arbeitsbereich erstellt.",
+      noRuntimeArchiveSelected:
+        "Kein Archiv ausgewählt. Die Instanz wird mit einem leeren {directory}-Arbeitsbereich erstellt.",
       quotaValidation: "Kontingentprüfung",
       unableToLoadQuota:
         "Ihr Kontingent konnte nicht geladen werden. Instanz erstellen bleibt deaktiviert, bis das Kontingent verfügbar ist.",
@@ -6463,6 +6568,11 @@ export const translations: Record<Locale, TranslationTree> = {
           label: "Webtop-Desktop",
           description:
             "Browserbasierter Linux-Desktop, der über ClawManager bereitgestellt wird",
+        },
+        hermes: {
+          label: "Hermes Runtime",
+          description:
+            "Hermes-Runtime auf Basis des Webtop-Desktop-Images",
         },
         custom: {
           label: "Benutzerdefiniertes Image",
@@ -6525,6 +6635,7 @@ export const translations: Record<Locale, TranslationTree> = {
         "{name} ist eine ClawManager-Built-in-Variable. Bearbeiten Sie sie stattdessen im Built-in-Bereich.",
       duplicateEnvName: "Doppelter Umgebungsvariablenname: {name}",
       openClawInjection: "OpenClaw-Injektion",
+      runtimeInjection: "{runtime}-Injektion",
       selectedCount: "{count} ausgewählt",
       noReusableSkillsSelected: "Keine wiederverwendbaren Skills ausgewählt.",
       noAvailableSkillsForInjection:
@@ -6540,6 +6651,7 @@ export const translations: Record<Locale, TranslationTree> = {
       archiveSkipsChannelInjection:
         "Der Archivmodus überspringt die ressourcenbasierte Channel-Injektion.",
       compilingOpenClawPreview: "OpenClaw-Ressourcenvorschau wird erstellt...",
+      compilingRuntimePreview: "Runtime-Ressourcenvorschau wird erstellt...",
       noChannelsSelectedForInjection:
         "Keine Channels für die Injektion ausgewählt.",
       skillInjection: "Skill-Injektion",

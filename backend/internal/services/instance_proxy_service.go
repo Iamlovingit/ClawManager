@@ -511,7 +511,7 @@ func (s *InstanceProxyService) resolveTargetScheme(instanceType string, websocke
 
 func usesHTTPSUpstream(instanceType string) bool {
 	switch instanceType {
-	case "ubuntu", "webtop", "openclaw":
+	case "ubuntu", "webtop", "hermes", "openclaw":
 		return true
 	default:
 		return false

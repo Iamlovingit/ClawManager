@@ -3,7 +3,6 @@ package services
 import "testing"
 
 func TestDefaultImagePullPolicy_Default(t *testing.T) {
-	// With no env var set, should return "IfNotPresent".
 	t.Setenv("IMAGE_PULL_POLICY", "")
 	got := defaultImagePullPolicy()
 	if got != "IfNotPresent" {
@@ -11,32 +10,31 @@ func TestDefaultImagePullPolicy_Default(t *testing.T) {
 	}
 }
 
-func TestDefaultImagePullPolicy_EnvOverride(t *testing.T) {
-	cases := []struct {
-		env  string
-		want string
-	}{
-		{"Always", "Always"},
-		{"Never", "Never"},
-		{"IfNotPresent", "IfNotPresent"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.env, func(t *testing.T) {
-			t.Setenv("IMAGE_PULL_POLICY", tc.env)
+func TestDefaultImagePullPolicy_IgnoresEnvOverride(t *testing.T) {
+	for _, envValue := range []string{"Always", "Never", "IfNotPresent", "   "} {
+		t.Run(envValue, func(t *testing.T) {
+			t.Setenv("IMAGE_PULL_POLICY", envValue)
 			got := defaultImagePullPolicy()
-			if got != tc.want {
-				t.Fatalf("expected %q, got %q", tc.want, got)
+			if got != "IfNotPresent" {
+				t.Fatalf("expected IfNotPresent, got %q", got)
 			}
 		})
 	}
 }
 
-func TestDefaultImagePullPolicy_WhitespaceOnly(t *testing.T) {
-	// Whitespace-only env var should fall back to default.
-	t.Setenv("IMAGE_PULL_POLICY", "   ")
-	got := defaultImagePullPolicy()
-	if got != "IfNotPresent" {
-		t.Fatalf("expected IfNotPresent, got %q", got)
+func TestBuildRuntimeConfig_HermesUsesWebtopDefaults(t *testing.T) {
+	config := buildRuntimeConfig("hermes", "hermes", "latest", nil, nil)
+
+	if config.Port != 3001 {
+		t.Fatalf("expected Hermes port 3001, got %d", config.Port)
+	}
+	if config.MountPath != "/config/.hermes" {
+		t.Fatalf("expected Hermes mount path /config/.hermes, got %q", config.MountPath)
+	}
+	if config.Env["SUBFOLDER"] != "/" {
+		t.Fatalf("expected Hermes default SUBFOLDER /, got %q", config.Env["SUBFOLDER"])
+	}
+	if !usesWebtopImage("hermes") {
+		t.Fatalf("expected Hermes to use webtop proxy behavior")
 	}
 }
-

@@ -11,13 +11,14 @@ import (
 	"clawreef/internal/services/k8s"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
-	k8sexec "k8s.io/client-go/util/exec"
 	"k8s.io/client-go/tools/remotecommand"
+	k8sexec "k8s.io/client-go/util/exec"
 )
 
 const (
-	openclawConfigDirName      = ".openclaw"
-	openclawBaseDir            = "/config"
+	openclawConfigDirName       = ".openclaw"
+	hermesConfigDirName         = ".hermes"
+	openclawBaseDir             = "/config"
 	openclawExportEmptyExitCode = 42
 )
 
@@ -26,13 +27,27 @@ const (
 // map this to an HTTP 404 rather than returning an empty 200 body.
 var ErrOpenClawWorkspaceMissing = errors.New("openclaw workspace is empty or missing")
 
+// ErrHermesWorkspaceMissing is returned by ExportHermes when the .hermes
+// workspace does not exist inside the runtime container.
+var ErrHermesWorkspaceMissing = errors.New("hermes workspace is empty or missing")
+
 type OpenClawTransferService interface {
 	Export(ctx context.Context, userID, instanceID int) ([]byte, error)
 	Import(ctx context.Context, userID, instanceID int, archive io.Reader) error
+	ExportHermes(ctx context.Context, userID, instanceID int) ([]byte, error)
+	ImportHermes(ctx context.Context, userID, instanceID int, archive io.Reader) error
 }
 
 type openClawTransferService struct {
 	podService *k8s.PodService
+}
+
+type workspaceTransferSpec struct {
+	dirName           string
+	baseDirExpr       string
+	missingErr        error
+	actionLabel       string
+	preserveTargetDir bool
 }
 
 func NewOpenClawTransferService() OpenClawTransferService {
@@ -53,20 +68,47 @@ func buildBaseDirExpr() string {
 	return fmt.Sprintf("${CLAWMANAGER_AGENT_PERSISTENT_DIR:-%s}", openclawBaseDir)
 }
 
+func openClawWorkspaceSpec() workspaceTransferSpec {
+	return workspaceTransferSpec{
+		dirName:     openclawConfigDirName,
+		baseDirExpr: buildBaseDirExpr(),
+		missingErr:  ErrOpenClawWorkspaceMissing,
+		actionLabel: ".openclaw",
+	}
+}
+
+func hermesWorkspaceSpec() workspaceTransferSpec {
+	return workspaceTransferSpec{
+		dirName:           hermesConfigDirName,
+		baseDirExpr:       openclawBaseDir,
+		missingErr:        ErrHermesWorkspaceMissing,
+		actionLabel:       ".hermes",
+		preserveTargetDir: true,
+	}
+}
+
 // buildExportCommand returns the sh -lc command used to stream a gzipped
 // tarball of the .openclaw workspace from the desktop container over stdout.
 // When the workspace does not exist, the command exits with
 // openclawExportEmptyExitCode so the service layer can map it to
 // ErrOpenClawWorkspaceMissing instead of returning an empty archive.
 func buildExportCommand() []string {
+	return buildWorkspaceExportCommand(openClawWorkspaceSpec())
+}
+
+func buildHermesExportCommand() []string {
+	return buildWorkspaceExportCommand(hermesWorkspaceSpec())
+}
+
+func buildWorkspaceExportCommand(spec workspaceTransferSpec) []string {
 	script := fmt.Sprintf(
 		`base_dir="%s"; target_dir="$base_dir/%s"; `+
 			`if [ ! -d "$target_dir" ]; then exit %d; fi; `+
 			`tar czf - -C "$base_dir" %s`,
-		buildBaseDirExpr(),
-		openclawConfigDirName,
+		spec.baseDirExpr,
+		spec.dirName,
 		openclawExportEmptyExitCode,
-		shellQuote(openclawConfigDirName),
+		shellQuote(spec.dirName),
 	)
 	return []string{"sh", "-lc", script}
 }
@@ -77,24 +119,52 @@ func buildExportCommand() []string {
 // files are owned by the runtime user, matching how the linuxserver
 // entrypoint writes /config.
 func buildImportCommand() []string {
+	return buildWorkspaceImportCommand(openClawWorkspaceSpec())
+}
+
+func buildHermesImportCommand() []string {
+	return buildWorkspaceImportCommand(hermesWorkspaceSpec())
+}
+
+func buildWorkspaceImportCommand(spec workspaceTransferSpec) []string {
+	clearTarget := `rm -rf "$target_dir" && mkdir -p "$base_dir"`
+	if spec.preserveTargetDir {
+		script := fmt.Sprintf(
+			`base_dir="%s"; target_dir="$base_dir/%s"; `+
+				`mkdir -p "$target_dir" && find "$target_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && `+
+				`tar xzf - -C "$base_dir" && chown -R abc:abc "$target_dir"`,
+			spec.baseDirExpr,
+			spec.dirName,
+		)
+		return []string{"sh", "-lc", script}
+	}
 	inner := fmt.Sprintf(
 		`base_dir="%s"; target_dir="$base_dir/%s"; `+
-			`rm -rf "$target_dir" && mkdir -p "$base_dir" && tar xzf - -C "$base_dir"`,
-		buildBaseDirExpr(),
-		openclawConfigDirName,
+			`%s && tar xzf - -C "$base_dir"`,
+		spec.baseDirExpr,
+		spec.dirName,
+		clearTarget,
 	)
 	outer := fmt.Sprintf(`exec su abc -s /bin/sh -c %s`, shellQuote(inner))
 	return []string{"sh", "-lc", outer}
 }
 
 func (s *openClawTransferService) Export(ctx context.Context, userID, instanceID int) ([]byte, error) {
+	return s.exportWorkspace(ctx, userID, instanceID, openClawWorkspaceSpec(), buildExportCommand())
+}
+
+func (s *openClawTransferService) ExportHermes(ctx context.Context, userID, instanceID int) ([]byte, error) {
+	return s.exportWorkspace(ctx, userID, instanceID, hermesWorkspaceSpec(), buildHermesExportCommand())
+}
+
+func (s *openClawTransferService) exportWorkspace(ctx context.Context, userID, instanceID int, spec workspaceTransferSpec, command []string) ([]byte, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := s.exec(ctx, userID, instanceID, buildExportCommand(), nil, &stdout, &stderr); err != nil {
+	if err := s.exec(ctx, userID, instanceID, command, nil, &stdout, &stderr); err != nil {
 		if isExportEmptyWorkspaceError(err) {
-			return nil, ErrOpenClawWorkspaceMissing
+			return nil, spec.missingErr
 		}
-		return nil, formatExecError("export .openclaw", err, stderr.String())
+		return nil, formatExecError("export "+spec.actionLabel, err, stderr.String())
 	}
 
 	return stdout.Bytes(), nil
@@ -117,9 +187,17 @@ func isExportEmptyWorkspaceError(err error) bool {
 }
 
 func (s *openClawTransferService) Import(ctx context.Context, userID, instanceID int, archive io.Reader) error {
+	return s.importWorkspace(ctx, userID, instanceID, archive, openClawWorkspaceSpec(), buildImportCommand())
+}
+
+func (s *openClawTransferService) ImportHermes(ctx context.Context, userID, instanceID int, archive io.Reader) error {
+	return s.importWorkspace(ctx, userID, instanceID, archive, hermesWorkspaceSpec(), buildHermesImportCommand())
+}
+
+func (s *openClawTransferService) importWorkspace(ctx context.Context, userID, instanceID int, archive io.Reader, spec workspaceTransferSpec, command []string) error {
 	var stderr bytes.Buffer
-	if err := s.exec(ctx, userID, instanceID, buildImportCommand(), archive, nil, &stderr); err != nil {
-		return formatExecError("import .openclaw", err, stderr.String())
+	if err := s.exec(ctx, userID, instanceID, command, archive, nil, &stderr); err != nil {
+		return formatExecError("import "+spec.actionLabel, err, stderr.String())
 	}
 
 	return nil

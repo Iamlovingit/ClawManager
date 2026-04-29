@@ -8,9 +8,10 @@ import {
 } from '../../services/systemSettingsService';
 
 const IMAGE_TYPE_OPTIONS = [
-  { value: 'openclaw', label: 'OpenClaw Desktop', defaultImage: 'ghcr.io/yuan-lab-llm/clawmanager-openclaw-image/openclaw:latest' },
+  { value: 'openclaw', label: 'OpenClaw Desktop', defaultImage: 'ghcr.io/Yuan-lab-LLM/AgentsRuntime/openclaw:latest' },
   { value: 'ubuntu', label: 'Ubuntu Desktop', defaultImage: 'lscr.io/linuxserver/webtop:ubuntu-xfce' },
   { value: 'webtop', label: 'Webtop Desktop', defaultImage: 'lscr.io/linuxserver/webtop:ubuntu-xfce' },
+  { value: 'hermes', label: 'Hermes Runtime', defaultImage: 'ghcr.io/Yuan-lab-LLM/AgentsRuntime/hermes:latest' },
   { value: 'debian', label: 'Debian Desktop', defaultImage: 'docker.io/clawreef/debian-desktop:12' },
   { value: 'centos', label: 'CentOS Desktop', defaultImage: 'docker.io/clawreef/centos-desktop:9' },
   { value: 'custom', label: 'Custom Image', defaultImage: 'registry.example.com/your-custom-image:latest' },

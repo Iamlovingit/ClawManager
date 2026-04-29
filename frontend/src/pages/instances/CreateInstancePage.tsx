@@ -45,6 +45,15 @@ const AGENT_PROTOCOL_VERSION = "v1";
 const CUSTOM_RESOURCE_PRESET = "custom";
 const SKILLS_PER_PAGE = 6;
 
+const supportsRuntimeInjection = (type: string) =>
+  type === "openclaw" || type === "hermes";
+
+const runtimeWorkspaceDirectory = (type: string) =>
+  type === "hermes" ? ".hermes" : ".openclaw";
+
+const runtimeProductName = (type: string) =>
+  type === "hermes" ? "Hermes" : "OpenClaw";
+
 const INSTANCE_TYPE_I18N_KEYS: Record<
   string,
   { label: string; description: string }
@@ -68,6 +77,10 @@ const INSTANCE_TYPE_I18N_KEYS: Record<
   webtop: {
     label: "instances.typeOptions.webtop.label",
     description: "instances.typeOptions.webtop.description",
+  },
+  hermes: {
+    label: "instances.typeOptions.hermes.label",
+    description: "instances.typeOptions.hermes.description",
   },
   custom: {
     label: "instances.typeOptions.custom.label",
@@ -97,6 +110,7 @@ const getBuiltInEnvTemplates = (
   diskGb: number,
 ): BuiltInEnvTemplate[] => {
   const templates: BuiltInEnvTemplate[] = [];
+  const persistentDir = type === "hermes" ? "/config/.hermes" : "/config";
 
   if (type === "ubuntu") {
     templates.push(
@@ -124,6 +138,101 @@ const getBuiltInEnvTemplates = (
         key: "SUBFOLDER",
         description: t("instances.envDescProxySubfolder"),
         defaultLabel: t("instances.envManagedProxyPath"),
+      },
+    );
+  }
+
+  if (type === "hermes") {
+    templates.push(
+      {
+        key: "TITLE",
+        description: t("instances.envDescDesktopTitleWebtop"),
+        defaultValue: "Hermes Runtime",
+      },
+      {
+        key: "SUBFOLDER",
+        description: t("instances.envDescProxySubfolder"),
+        defaultLabel: t("instances.envManagedProxyPath"),
+      },
+      {
+        key: "CLAWMANAGER_LLM_BASE_URL",
+        description: t("instances.envDescLlmBaseUrl"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "CLAWMANAGER_LLM_API_KEY",
+        description: t("instances.envDescLlmApiKey"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "CLAWMANAGER_LLM_MODEL",
+        description: t("instances.envDescLlmModel"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "CLAWMANAGER_LLM_PROVIDER",
+        description: t("instances.envDescLlmProvider"),
+        defaultValue: "openai-compatible",
+      },
+      {
+        key: "CLAWMANAGER_INSTANCE_TOKEN",
+        description: t("instances.envDescInstanceToken"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "OPENAI_BASE_URL",
+        description: t("instances.envDescOpenAiBaseUrl"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "OPENAI_API_BASE",
+        description: t("instances.envDescOpenAiApiBase"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "OPENAI_API_KEY",
+        description: t("instances.envDescOpenAiApiKey"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "OPENAI_MODEL",
+        description: t("instances.envDescOpenAiModel"),
+        defaultValue: "auto",
+      },
+      {
+        key: "CLAWMANAGER_AGENT_ENABLED",
+        description: t("instances.envDescAgentEnabled"),
+        defaultValue: "true",
+      },
+      {
+        key: "CLAWMANAGER_AGENT_BASE_URL",
+        description: t("instances.envDescAgentBaseUrl"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "CLAWMANAGER_AGENT_BOOTSTRAP_TOKEN",
+        description: t("instances.envDescAgentBootstrapToken"),
+        defaultLabel: t("instances.envGeneratedAtRuntime"),
+      },
+      {
+        key: "CLAWMANAGER_AGENT_DISK_LIMIT_BYTES",
+        description: t("instances.envDescAgentDiskLimitBytes"),
+        defaultValue: String(diskGb * BYTES_PER_GIB),
+      },
+      {
+        key: "CLAWMANAGER_AGENT_INSTANCE_ID",
+        description: t("instances.envDescAgentInstanceId"),
+        defaultLabel: t("instances.envAssignedAfterCreation"),
+      },
+      {
+        key: "CLAWMANAGER_AGENT_PERSISTENT_DIR",
+        description: t("instances.envDescAgentPersistentDir"),
+        defaultValue: persistentDir,
+      },
+      {
+        key: "CLAWMANAGER_AGENT_PROTOCOL_VERSION",
+        description: t("instances.envDescAgentProtocolVersion"),
+        defaultValue: AGENT_PROTOCOL_VERSION,
       },
     );
   }
@@ -213,7 +322,7 @@ const getBuiltInEnvTemplates = (
       {
         key: "CLAWMANAGER_AGENT_PERSISTENT_DIR",
         description: t("instances.envDescAgentPersistentDir"),
-        defaultValue: "/config",
+        defaultValue: persistentDir,
       },
       {
         key: "CLAWMANAGER_AGENT_PROTOCOL_VERSION",
@@ -468,7 +577,7 @@ const CreateInstancePage: React.FC = () => {
   const handleTypeSelect = (typeId: string) => {
     const instanceType = availableTypes.find((t) => t.id === typeId);
     if (instanceType) {
-      if (typeId !== "openclaw") {
+      if (!supportsRuntimeInjection(typeId)) {
         setOpenClawImportFile(null);
         setOpenClawInjectionMode("none");
         setOpenClawBundleId(undefined);
@@ -624,13 +733,15 @@ const CreateInstancePage: React.FC = () => {
         image_registry: selectedRuntimeImage?.image,
         image_tag: selectedRuntimeImage ? undefined : formData.image_tag,
         environment_overrides: overrides,
-        skill_ids: formData.type === "openclaw" ? selectedSkillIds : undefined,
+        skill_ids: supportsRuntimeInjection(formData.type)
+          ? selectedSkillIds
+          : undefined,
         openclaw_config_plan:
-          formData.type === "openclaw" &&
+          supportsRuntimeInjection(formData.type) &&
           openClawInjectionMode === "bundle" &&
           openClawBundleId
             ? { mode: "bundle", bundle_id: openClawBundleId }
-            : formData.type === "openclaw" &&
+            : supportsRuntimeInjection(formData.type) &&
                 openClawInjectionMode === "manual" &&
                 openClawResourceIds.length > 0
               ? { mode: "manual", resource_ids: openClawResourceIds }
@@ -641,15 +752,22 @@ const CreateInstancePage: React.FC = () => {
         await instanceService.createInstance(createPayload);
 
       if (
-        formData.type === "openclaw" &&
+        supportsRuntimeInjection(formData.type) &&
         openClawInjectionMode === "archive" &&
         openClawImportFile
       ) {
         await waitForInstanceRunning(createdInstance.id);
-        await instanceService.importOpenClawWorkspace(
-          createdInstance.id,
-          openClawImportFile,
-        );
+        if (formData.type === "hermes") {
+          await instanceService.importHermesWorkspace(
+            createdInstance.id,
+            openClawImportFile,
+          );
+        } else {
+          await instanceService.importOpenClawWorkspace(
+            createdInstance.id,
+            openClawImportFile,
+          );
+        }
       }
 
       navigate("/instances");
@@ -759,7 +877,7 @@ const CreateInstancePage: React.FC = () => {
   const exceededQuotaItems = quotaChecks.filter((item) => item.exceeded);
   const quotaExceeded = exceededQuotaItems.length > 0;
   const openClawPlanInvalid =
-    formData.type === "openclaw" &&
+    supportsRuntimeInjection(formData.type) &&
     ((openClawInjectionMode === "bundle" &&
       (!openClawBundleId ||
         !!openClawPreviewError ||
@@ -815,6 +933,16 @@ const CreateInstancePage: React.FC = () => {
         <img
           src="/openclaw.png"
           alt="OpenClaw"
+          className="h-10 w-10 object-contain"
+        />
+      );
+    }
+
+    if (typeId === "hermes") {
+      return (
+        <img
+          src="/hermes.png"
+          alt="Hermes"
           className="h-10 w-10 object-contain"
         />
       );
@@ -1586,7 +1714,7 @@ const CreateInstancePage: React.FC = () => {
                       {quotaLoading
                         ? t("instances.checkingQuota")
                         : loading
-                          ? formData.type === "openclaw" &&
+                          ? supportsRuntimeInjection(formData.type) &&
                             openClawInjectionMode === "archive" &&
                             openClawImportFile
                             ? t("instances.creatingAndImporting")
@@ -1596,12 +1724,14 @@ const CreateInstancePage: React.FC = () => {
                   </div>
                 </div>
 
-                {formData.type === "openclaw" && (
+                {supportsRuntimeInjection(formData.type) && (
                   <div className="app-panel order-2 p-6">
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <h2 className="text-lg font-medium text-gray-900">
-                          {t("instances.openClawInjection")}
+                          {t("instances.runtimeInjection", {
+                            runtime: runtimeProductName(formData.type),
+                          })}
                         </h2>
                       </div>
                       <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-600">
@@ -1798,8 +1928,16 @@ const CreateInstancePage: React.FC = () => {
                             className="app-button-secondary"
                           >
                             {openClawImportFile
-                              ? t("instances.changeOpenClawArchive")
-                              : t("instances.chooseOpenClawArchive")}
+                              ? t("instances.changeRuntimeArchive", {
+                                  directory: runtimeWorkspaceDirectory(
+                                    formData.type,
+                                  ),
+                                })
+                              : t("instances.chooseRuntimeArchive", {
+                                  directory: runtimeWorkspaceDirectory(
+                                    formData.type,
+                                  ),
+                                })}
                           </button>
                           {openClawImportFile && (
                             <button
@@ -1822,7 +1960,11 @@ const CreateInstancePage: React.FC = () => {
                             ? t("instances.selectedArchive", {
                                 name: openClawImportFile.name,
                               })
-                            : t("instances.noArchiveSelected")}
+                            : t("instances.noRuntimeArchiveSelected", {
+                                directory: runtimeWorkspaceDirectory(
+                                  formData.type,
+                                ),
+                              })}
                         </div>
                       </div>
                     )}
@@ -1966,7 +2108,7 @@ const CreateInstancePage: React.FC = () => {
                         )
                       )}
                     </div>
-                    {formData.type === "openclaw" && (
+                    {supportsRuntimeInjection(formData.type) && (
                       <>
                         <div className="sm:col-span-2">
                           <dt className="text-sm font-medium text-gray-500">
@@ -1978,7 +2120,7 @@ const CreateInstancePage: React.FC = () => {
                             </p>
                           ) : openClawPreviewLoading ? (
                             <p className="mt-2 text-sm text-gray-400">
-                              {t("instances.compilingOpenClawPreview")}
+                              {t("instances.compilingRuntimePreview")}
                             </p>
                           ) : openClawPreviewError ? (
                             <p className="mt-2 text-sm text-red-600">

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS instances (
   user_id INT NOT NULL,
   name VARCHAR(255) NOT NULL,
   description TEXT,
-  type ENUM('openclaw', 'ubuntu', 'debian', 'centos', 'custom', 'webtop') DEFAULT 'ubuntu',
+  type ENUM('openclaw', 'ubuntu', 'debian', 'centos', 'custom', 'webtop', 'hermes') DEFAULT 'ubuntu',
   status ENUM('creating', 'running', 'stopped', 'error', 'deleting') DEFAULT 'creating',
   cpu_cores INT NOT NULL,
   memory_gb INT NOT NULL,

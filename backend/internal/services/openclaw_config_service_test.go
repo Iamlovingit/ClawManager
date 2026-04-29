@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"clawreef/internal/models"
@@ -110,6 +111,32 @@ func TestRenderCompiledOpenClawPayloadRendersChannelsAsKeyedConfigMap(t *testing
 	wantSkills := `{"items":[{"content":{"schemaVersion":1,"kind":"skill","format":"skill/custom@v1","dependsOn":[],"config":{"prompt":"help"}},"id":5,"key":"support-bot","name":"Support Bot","tags":["skill"],"type":"skill","version":1}],"schemaVersion":1}`
 	if gotSkills != wantSkills {
 		t.Fatalf("unexpected skill payload:\nwant: %s\ngot:  %s", wantSkills, gotSkills)
+	}
+}
+
+func TestRuntimeBootstrapEnvValuesAddsHermesAndRuntimeAliases(t *testing.T) {
+	env := map[string]string{
+		OpenClawChannelsEnv:          `{"slack":{"enabled":true}}`,
+		OpenClawSkillsEnv:            `{"schemaVersion":1,"items":[]}`,
+		OpenClawBootstrapManifestEnv: `{"schemaVersion":1,"payloads":[{"env":"CLAWMANAGER_OPENCLAW_CHANNELS_JSON","count":1},{"env":"CLAWMANAGER_OPENCLAW_SKILLS_JSON","count":0}]}`,
+	}
+
+	got := runtimeBootstrapEnvValues("hermes", env)
+
+	if got[HermesChannelsEnv] != env[OpenClawChannelsEnv] {
+		t.Fatalf("expected Hermes channels alias to mirror OpenClaw channels")
+	}
+	if got[RuntimeSkillsEnv] != env[OpenClawSkillsEnv] {
+		t.Fatalf("expected runtime skills alias to mirror OpenClaw skills")
+	}
+	if got[OpenClawChannelsEnv] != env[OpenClawChannelsEnv] {
+		t.Fatalf("expected original OpenClaw channels env to be preserved")
+	}
+	if !strings.Contains(got[HermesBootstrapManifestEnv], HermesChannelsEnv) {
+		t.Fatalf("expected Hermes manifest alias to reference Hermes env names, got %s", got[HermesBootstrapManifestEnv])
+	}
+	if !strings.Contains(got[RuntimeBootstrapManifestEnv], RuntimeChannelsEnv) {
+		t.Fatalf("expected runtime manifest alias to reference runtime env names, got %s", got[RuntimeBootstrapManifestEnv])
 	}
 }
 

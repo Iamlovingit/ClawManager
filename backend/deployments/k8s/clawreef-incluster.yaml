@@ -43,7 +43,7 @@ data:
       user_id INT NOT NULL,
       name VARCHAR(255) NOT NULL,
       description TEXT,
-      type ENUM('openclaw', 'ubuntu', 'debian', 'centos', 'custom', 'webtop') DEFAULT 'ubuntu',
+      type ENUM('openclaw', 'ubuntu', 'debian', 'centos', 'custom', 'webtop', 'hermes') DEFAULT 'ubuntu',
       status ENUM('creating', 'running', 'stopped', 'error', 'deleting') DEFAULT 'creating',
       cpu_cores DECIMAL(10,2) NOT NULL,
       memory_gb INT NOT NULL,
@@ -170,7 +170,7 @@ data:
   002_add_webtop_instance_type.sql: |
     USE clawreef;
     ALTER TABLE instances
-    MODIFY COLUMN type ENUM('openclaw', 'ubuntu', 'debian', 'centos', 'custom', 'webtop') DEFAULT 'ubuntu';
+    MODIFY COLUMN type ENUM('openclaw', 'ubuntu', 'debian', 'centos', 'custom', 'webtop', 'hermes') DEFAULT 'ubuntu';
   003_add_system_image_settings.sql: |
     USE clawreef;
     CREATE TABLE IF NOT EXISTS system_image_settings (
@@ -192,9 +192,12 @@ data:
   005_update_openclaw_default_image.sql: |
     USE clawreef;
     UPDATE system_image_settings
-    SET image = 'ghcr.io/yuan-lab-llm/clawmanager-openclaw-image/openclaw:latest'
+    SET image = 'ghcr.io/Yuan-lab-LLM/AgentsRuntime/openclaw:latest'
     WHERE instance_type = 'openclaw'
-      AND image = 'ericpearlee/openclaw:v2026.3.24';
+      AND image IN (
+        'ericpearlee/openclaw:v2026.3.24',
+        'ghcr.io/yuan-lab-llm/clawmanager-openclaw-image/openclaw:latest'
+      );
   006_add_openclaw_config_center.sql: |
     USE clawreef;
     SET @openclaw_snapshot_column_exists = (
@@ -279,6 +282,27 @@ data:
       INDEX idx_openclaw_snapshot_instance (instance_id),
       INDEX idx_openclaw_snapshot_bundle (bundle_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  011_add_hermes_instance_type.sql: |
+    USE clawreef;
+    ALTER TABLE instances
+    MODIFY COLUMN type ENUM('openclaw', 'ubuntu', 'debian', 'centos', 'custom', 'webtop', 'hermes') DEFAULT 'ubuntu';
+  012_update_agents_runtime_default_images.sql: |
+    USE clawreef;
+    UPDATE system_image_settings
+    SET image = 'ghcr.io/Yuan-lab-LLM/AgentsRuntime/openclaw:latest'
+    WHERE instance_type = 'openclaw'
+      AND image IN (
+        'ericpearlee/openclaw:v2026.3.24',
+        'ghcr.io/yuan-lab-llm/clawmanager-openclaw-image/openclaw:latest'
+      );
+
+    UPDATE system_image_settings
+    SET image = 'ghcr.io/Yuan-lab-LLM/AgentsRuntime/hermes:latest'
+    WHERE instance_type = 'hermes'
+      AND image IN (
+        'registry.example.com/hermes-webtop:latest',
+        'lscr.io/linuxserver/webtop:ubuntu-xfce'
+      );
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

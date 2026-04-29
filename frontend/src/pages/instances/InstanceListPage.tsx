@@ -418,6 +418,8 @@ const InstanceListPage: React.FC = () => {
         return 'CE';
       case 'openclaw':
         return 'OC';
+      case 'hermes':
+        return 'HM';
       default:
         return 'VM';
     }

@@ -29,6 +29,7 @@
   <a href="#product-tour">Explore the Product</a> |
   <a href="#ai-gateway">AI Gateway</a> |
   <a href="#agent-control-plane">Agent Control Plane</a> |
+  <a href="#runtime-integrations">Runtime Integrations</a> |
   <a href="#resource-management">Resource Management</a> |
   <a href="#get-started">Get Started</a>
 </p>
@@ -53,6 +54,7 @@
 
 Recent highlights from the latest product and documentation updates.
 
+- [2026-04-29] Added Hermes runtime integration support, including Webtop-based instance provisioning, Agent Control Plane registration, AI Gateway injection, channel and skill bootstrap, and `.hermes` import/export workflows. See the [Hermes Runtime Guide](./docs/hermes-runtime-agent-development.md).
 - [2026-04-08] Added skill management and skill scanning workflows to the platform, via [Merged PR #52](https://github.com/Yuan-lab-LLM/ClawManager/pull/52).
 - [2026-03-26] AI Gateway documentation was refreshed with stronger coverage for model governance, audit and trace, cost accounting, and risk control. See the [AI Gateway Guide](./docs/aigateway.md).
 - [2026-03-20] ClawManager evolved into a broader control plane for AI agent workspaces, with stronger runtime control, reusable resources, and security scanning workflows.
@@ -83,6 +85,21 @@ It is designed for:
 - platform teams running AI agent instances for multiple users
 - operators who need runtime visibility, command dispatch, and desired-state control
 - builders who want governed AI access and reusable resource injection instead of manual per-instance setup
+
+<a id="runtime-integrations"></a>
+## Runtime Integrations
+
+ClawManager now supports both OpenClaw and Hermes as managed runtime integrations. Hermes is integrated on the Webtop baseline: desktop access uses port `3001`, persistent data lives under `/config/.hermes`, and the embedded Hermes agent connects back to ClawManager for runtime status, health, metrics, commands, channel injection, skill injection, and skill package synchronization.
+
+Hermes instances receive the same platform-managed capabilities as OpenClaw-style workspaces:
+
+- AI Gateway environment injection through OpenAI-compatible variables
+- Agent bootstrap and session-based registration
+- channel and skill bootstrap payloads for runtime-side configuration
+- `install_skill`, `collect_skill_package`, health check, and system info commands
+- `.hermes` workspace import and export for persistent runtime data
+
+Runtime authors can follow the [Hermes Runtime Guide](./docs/hermes-runtime-agent-development.md), the [Generic Runtime Agent Integration Guide](./docs/runtime-agent-integration-guide.md), and the [Skill Content MD5 Spec](./docs/skill-content-md5-spec.md) to build compatible agents.
 
 ## Get Started
 
@@ -187,6 +204,9 @@ See the [Developer Guide](./docs/developer-guide.md).
 - [AI Gateway Guide](./docs/aigateway.md)
 - [Security / Skill Scanner Guide](./docs/security-skill-scanner.md)
 - [Resource Management Guide](./docs/resource-management.md)
+- [Hermes Runtime Guide](./docs/hermes-runtime-agent-development.md)
+- [Generic Runtime Agent Integration Guide](./docs/runtime-agent-integration-guide.md)
+- [Skill Content MD5 Spec](./docs/skill-content-md5-spec.md)
 - [Developer Guide](./docs/developer-guide.md)
 
 ## License

@@ -85,7 +85,7 @@ type PublishConfigRevisionRequest struct {
 type CreateInstanceRequest struct {
 	Name                 string                       `json:"name" binding:"required,min=3,max=50"`
 	Description          *string                      `json:"description,omitempty"`
-	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop"`
+	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes"`
 	CPUCores             float64                      `json:"cpu_cores" binding:"required,min=0.1,max=32"`
 	MemoryGB             int                          `json:"memory_gb" binding:"required,min=1,max=128"`
 	DiskGB               int                          `json:"disk_gb" binding:"required,min=10,max=1000"`
@@ -595,8 +595,8 @@ func (h *InstanceHandler) PublishConfigRevision(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !strings.EqualFold(instance.Type, "openclaw") {
-		utils.Error(c, http.StatusBadRequest, "Only openclaw instances support config revisions")
+	if !strings.EqualFold(instance.Type, "openclaw") && !strings.EqualFold(instance.Type, "hermes") {
+		utils.Error(c, http.StatusBadRequest, "Only managed runtime instances support config revisions")
 		return
 	}
 
@@ -929,6 +929,44 @@ func (h *InstanceHandler) ExportOpenClaw(c *gin.Context) {
 	c.Data(http.StatusOK, "application/gzip", archive)
 }
 
+func (h *InstanceHandler) ExportHermes(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+
+	if instance.Type != "hermes" {
+		utils.Error(c, http.StatusBadRequest, "hermes import/export is only available for hermes instances")
+		return
+	}
+
+	if instance.Status != "running" {
+		utils.Error(c, http.StatusBadRequest, "instance must be running to export .hermes")
+		return
+	}
+
+	archive, err := h.openClawTransferService.ExportHermes(c.Request.Context(), instance.UserID, instance.ID)
+	if err != nil {
+		if errors.Is(err, services.ErrHermesWorkspaceMissing) {
+			utils.Error(c, http.StatusNotFound, "hermes workspace is empty or missing")
+			return
+		}
+		utils.HandleError(c, err)
+		return
+	}
+
+	if len(archive) < openclawMinArchiveBytes {
+		utils.Error(c, http.StatusInternalServerError, "export produced an empty archive")
+		return
+	}
+
+	filename := fmt.Sprintf("%s.hermes.tar.gz", sanitizeDownloadName(instance.Name, "hermes-workspace"))
+	c.Header("Content-Type", "application/gzip")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Header("Content-Length", strconv.Itoa(len(archive)))
+	c.Data(http.StatusOK, "application/gzip", archive)
+}
+
 func (h *InstanceHandler) ImportOpenClaw(c *gin.Context) {
 	instance, ok := h.requireOwnedInstance(c)
 	if !ok {
@@ -984,6 +1022,57 @@ func (h *InstanceHandler) ImportOpenClaw(c *gin.Context) {
 	utils.Success(c, http.StatusOK, "OpenClaw workspace imported successfully", nil)
 }
 
+func (h *InstanceHandler) ImportHermes(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+
+	if instance.Type != "hermes" {
+		utils.Error(c, http.StatusBadRequest, "hermes import/export is only available for hermes instances")
+		return
+	}
+
+	if instance.Status != "running" {
+		utils.Error(c, http.StatusBadRequest, "instance must be running to import .hermes")
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openclawMaxUploadBytes)
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			utils.Error(c, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
+			return
+		}
+		utils.Error(c, http.StatusBadRequest, "file is required")
+		return
+	}
+
+	if fileHeader.Size > openclawMaxUploadBytes {
+		utils.Error(c, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	defer file.Close()
+
+	if err := h.openClawTransferService.ImportHermes(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, openclawMaxUploadBytes)); err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Hermes workspace imported successfully", nil)
+}
+
 func (h *InstanceHandler) requireOwnedInstance(c *gin.Context) (*models.Instance, bool) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -1013,9 +1102,12 @@ func (h *InstanceHandler) requireOwnedInstance(c *gin.Context) (*models.Instance
 	return instance, true
 }
 
-func sanitizeDownloadName(name string) string {
+func sanitizeDownloadName(name string, fallback ...string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
+		if len(fallback) > 0 && strings.TrimSpace(fallback[0]) != "" {
+			return strings.TrimSpace(fallback[0])
+		}
 		return "openclaw-workspace"
 	}
 

@@ -13,6 +13,7 @@ var orderedSystemImageTypes = []string{
 	"openclaw",
 	"ubuntu",
 	"webtop",
+	"hermes",
 	"debian",
 	"centos",
 	"custom",
@@ -22,15 +23,17 @@ var supportedSystemImageTypes = map[string]string{
 	"openclaw": "OpenClaw Desktop",
 	"ubuntu":   "Ubuntu Desktop",
 	"webtop":   "Webtop Desktop",
+	"hermes":   "Hermes Runtime",
 	"debian":   "Debian Desktop",
 	"centos":   "CentOS Desktop",
 	"custom":   "Custom Image",
 }
 
 var defaultSystemImageSettings = map[string]string{
-	"openclaw": "ghcr.io/yuan-lab-llm/clawmanager-openclaw-image/openclaw:latest",
+	"openclaw": "ghcr.io/Yuan-lab-LLM/AgentsRuntime/openclaw:latest",
 	"ubuntu":   "lscr.io/linuxserver/webtop:ubuntu-xfce",
 	"webtop":   "lscr.io/linuxserver/webtop:ubuntu-xfce",
+	"hermes":   "ghcr.io/Yuan-lab-LLM/AgentsRuntime/hermes:latest",
 	"debian":   "docker.io/clawreef/debian-desktop:12",
 	"centos":   "docker.io/clawreef/centos-desktop:9",
 	"custom":   "registry.example.com/your-custom-image:latest",
@@ -39,6 +42,7 @@ var defaultSystemImageSettings = map[string]string{
 var defaultEnabledSystemImageTypes = map[string]bool{
 	"openclaw": true,
 	"ubuntu":   true,
+	"hermes":   true,
 }
 
 // RuntimeImageSettingsProvider exposes runtime image lookup for instance types.

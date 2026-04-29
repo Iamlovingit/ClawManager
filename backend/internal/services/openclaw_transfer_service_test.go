@@ -42,6 +42,24 @@ func TestBuildExportCommand_QuotesConfigDirName(t *testing.T) {
 	}
 }
 
+func TestBuildHermesExportCommand_ExportsHermesDirectoryFromConfig(t *testing.T) {
+	cmd := buildHermesExportCommand()
+	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-lc" {
+		t.Fatalf("unexpected command shape: %#v", cmd)
+	}
+	script := cmd[2]
+
+	if !strings.Contains(script, `base_dir="/config"`) {
+		t.Errorf("expected Hermes export to use /config as archive base, got: %s", script)
+	}
+	if !strings.Contains(script, `target_dir="$base_dir/.hermes"`) {
+		t.Errorf("expected Hermes export target to be /config/.hermes, got: %s", script)
+	}
+	if !strings.Contains(script, shellQuote(hermesConfigDirName)) {
+		t.Errorf("expected quoted .hermes in script, got: %s", script)
+	}
+}
+
 func TestBuildImportCommand_UsesSuAbc(t *testing.T) {
 	cmd := buildImportCommand()
 	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-lc" {
@@ -65,6 +83,30 @@ func TestBuildImportCommand_NoHomeReference(t *testing.T) {
 	}
 	if !strings.Contains(script, "CLAWMANAGER_AGENT_PERSISTENT_DIR") {
 		t.Errorf("expected CLAWMANAGER_AGENT_PERSISTENT_DIR in import script, got: %s", script)
+	}
+}
+
+func TestBuildHermesImportCommand_PreservesMountedHermesDirectory(t *testing.T) {
+	cmd := buildHermesImportCommand()
+	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-lc" {
+		t.Fatalf("unexpected command shape: %#v", cmd)
+	}
+	script := cmd[2]
+
+	if !strings.Contains(script, `base_dir="/config"`) {
+		t.Errorf("expected Hermes import to use /config as archive base, got: %s", script)
+	}
+	if strings.Contains(script, `rm -rf "$target_dir"`) {
+		t.Errorf("Hermes import must not remove the /config/.hermes mount point, got: %s", script)
+	}
+	if !strings.Contains(script, `find "$target_dir" -mindepth 1 -maxdepth 1`) {
+		t.Errorf("expected Hermes import to clear contents below mount point, got: %s", script)
+	}
+	if !strings.Contains(script, "tar xzf -") {
+		t.Errorf("expected `tar xzf -` in extract, got: %s", script)
+	}
+	if !strings.Contains(script, `chown -R abc:abc "$target_dir"`) {
+		t.Errorf("expected Hermes import to restore runtime user ownership, got: %s", script)
 	}
 }
 
