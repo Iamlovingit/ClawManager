@@ -499,6 +499,11 @@ func (s *openClawConfigService) ValidateResource(req UpsertOpenClawConfigResourc
 	if err != nil {
 		return err
 	}
+	if resourceType == OpenClawConfigResourceTypeScheduledTask {
+		if err := validateScheduledTaskEnvelope(envelope); err != nil {
+			return err
+		}
+	}
 	for _, dep := range envelope.DependsOn {
 		if !isValidOpenClawResourceType(dep.Type) {
 			return fmt.Errorf("openclaw config dependency type is invalid")

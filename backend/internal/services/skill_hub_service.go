@@ -825,6 +825,423 @@ func (s *skillService) ListAttachableSkills(actorUserID int, actorRole string) (
 	return result, nil
 }
 
+func isInstanceSkillContentDiverged(observedHash *string, installedHash string) bool {
+	if observedHash == nil {
+		return false
+	}
+	observed := strings.TrimSpace(*observedHash)
+	installed := strings.TrimSpace(installedHash)
+	if observed == "" || installed == "" {
+		return false
+	}
+	return !strings.EqualFold(observed, installed)
+}
+
+func (s *skillService) installedContentHashForInstanceSkill(item *models.InstanceSkill) (string, error) {
+	if item == nil || item.SkillVersionID == nil {
+		return "", nil
+	}
+	version, err := s.repo.GetVersionByID(*item.SkillVersionID)
+	if err != nil {
+		return "", err
+	}
+	if version == nil {
+		return "", nil
+	}
+	blob, err := s.repo.GetBlobByID(version.BlobID)
+	if err != nil {
+		return "", err
+	}
+	if blob == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(blob.ContentHash), nil
+}
+
+func (s *skillService) requireOwnedInstanceAccess(actorUserID int, actorRole string, instanceID int) (*models.Instance, error) {
+	instance, err := s.instanceRepo.GetByID(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if instance == nil {
+		return nil, fmt.Errorf("instance not found")
+	}
+	if !isAdminRole(actorRole) && instance.UserID != actorUserID {
+		return nil, fmt.Errorf("access denied")
+	}
+	return instance, nil
+}
+
+func (s *skillService) allocateUniqueSkillKey(userID int, base string) (string, error) {
+	base = sanitizeSkillKey(base)
+	if base == "" {
+		base = "skill"
+	}
+	candidates := []string{base + "-copy"}
+	for i := 2; i <= 100; i++ {
+		candidates = append(candidates, fmt.Sprintf("%s-copy-%d", base, i))
+	}
+	for _, candidate := range candidates {
+		existing, err := s.repo.GetSkillByUserKey(userID, candidate)
+		if err != nil {
+			return "", err
+		}
+		if existing == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("unable to allocate unique skill key")
+}
+
+func (s *skillService) ensureVersionForSkillBlob(skillID, blobID int, sourceType string) (*models.SkillVersion, error) {
+	version, err := s.repo.GetVersionBySkillAndBlob(skillID, blobID)
+	if err != nil {
+		return nil, err
+	}
+	if version != nil {
+		return version, nil
+	}
+	latest, err := s.repo.GetLatestVersionBySkillID(skillID)
+	if err != nil {
+		return nil, err
+	}
+	versionNo := 1
+	if latest != nil {
+		versionNo = latest.VersionNo + 1
+	}
+	version = &models.SkillVersion{
+		SkillID: skillID, BlobID: blobID, VersionNo: versionNo, SourceType: sourceType,
+	}
+	if err := s.repo.CreateVersion(version); err != nil {
+		return nil, err
+	}
+	return version, nil
+}
+
+func (s *skillService) collectCurrentInstanceSkillBlob(instanceID int, skill *models.Skill, instanceSkill *models.InstanceSkill) (*models.SkillBlob, error) {
+	instance, err := s.instanceRepo.GetByID(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if instance == nil {
+		return nil, fmt.Errorf("instance not found")
+	}
+
+	if liteInventoryUsesWorkspaceHash(instance) {
+		workspaceDir := resolveLiteWorkspaceDir(instanceSkill, skill)
+		if workspaceDir == "" {
+			return nil, fmt.Errorf("skill_package_pending")
+		}
+		dir, contentMD5, err := loadLiteSkillDirectoryFromWorkspace(instance, workspaceDir)
+		if err != nil {
+			return nil, err
+		}
+		// Pass nil existing blob so diverged content never mutates the installed version blob.
+		return s.persistDiscoveredSkillPackage(context.Background(), instanceID, dir, contentMD5, nil)
+	}
+
+	observed := ""
+	if instanceSkill != nil && instanceSkill.ObservedHash != nil {
+		observed = strings.TrimSpace(*instanceSkill.ObservedHash)
+	}
+	if observed != "" {
+		blob, err := s.repo.GetBlobByContentHash(observed)
+		if err != nil {
+			return nil, err
+		}
+		if blob != nil && strings.TrimSpace(blob.ObjectKey) != "" {
+			if blob.LastScanResultID == nil || !strings.EqualFold(strings.TrimSpace(blob.ScanStatus), "completed") {
+				if err := s.recordScanFromStoredBlob(blob); err != nil {
+					return nil, err
+				}
+				blob, err = s.repo.GetBlobByID(blob.ID)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return blob, nil
+		}
+	}
+
+	payload := map[string]interface{}{
+		"skill_id":   formatExternalSkillID(skill.ID),
+		"identifier": skill.SkillKey,
+		"source":     instanceSkill.SourceType,
+	}
+	if observed != "" {
+		payload["content_md5"] = observed
+	}
+	if instanceSkill != nil && instanceSkill.SkillVersionID != nil {
+		payload["skill_version"] = formatExternalVersionID(*instanceSkill.SkillVersionID)
+	}
+	_ = s.enqueueCollectSkillPackage(instanceID, payload, fmt.Sprintf("collect-skill-package-diverged-%d-%d-%d", instanceID, skill.ID, time.Now().Unix()))
+	return nil, fmt.Errorf("skill_package_pending")
+}
+
+func (s *skillService) rebindInstanceSkill(instanceID, oldSkillID, newSkillID int, versionID *int, observedHash string) error {
+	now := time.Now().UTC()
+	oldItem, err := s.repo.GetInstanceSkill(instanceID, oldSkillID)
+	if err != nil {
+		return err
+	}
+	if oldItem == nil || oldItem.Status == "removed" {
+		return fmt.Errorf("skill not found on instance")
+	}
+	newItem := &models.InstanceSkill{
+		InstanceID: instanceID, SkillID: newSkillID, SkillVersionID: versionID,
+		SourceType: "injected_by_clawmanager", InstallPath: oldItem.InstallPath, WorkspaceDir: oldItem.WorkspaceDir,
+		ObservedHash: optionalString(observedHash), Status: "active", LastSeenAt: &now, UpdatedAt: now, RemovedAt: nil,
+	}
+	if err := s.repo.UpsertInstanceSkill(newItem); err != nil {
+		return err
+	}
+	if oldSkillID != newSkillID {
+		if err := s.repo.MarkInstanceSkillRemoved(instanceID, oldSkillID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *skillService) RestoreInstanceSkill(actorUserID int, actorRole string, instanceID, skillID int) (*InstanceSkillPayload, error) {
+	instance, err := s.requireOwnedInstanceAccess(actorUserID, actorRole, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := EnsureInstanceWorkspacePathForServerScan(context.Background(), s.instanceRepo, instance); err != nil {
+		return nil, err
+	}
+	skill, err := s.repo.GetSkillByID(skillID)
+	if err != nil {
+		return nil, err
+	}
+	if skill == nil || isDeletedSkill(skill) {
+		return nil, fmt.Errorf("skill not found")
+	}
+	instanceSkill, err := s.repo.GetInstanceSkill(instanceID, skillID)
+	if err != nil {
+		return nil, err
+	}
+	if instanceSkill == nil || instanceSkill.Status == "removed" {
+		return nil, fmt.Errorf("skill not found on instance")
+	}
+	if instanceSkill.SkillVersionID == nil {
+		return nil, fmt.Errorf("skill version not found")
+	}
+	version, err := s.repo.GetVersionByID(*instanceSkill.SkillVersionID)
+	if err != nil {
+		return nil, err
+	}
+	if version == nil {
+		return nil, fmt.Errorf("skill version not found")
+	}
+	blob, err := s.repo.GetBlobByID(version.BlobID)
+	if err != nil {
+		return nil, err
+	}
+	if blob == nil || strings.TrimSpace(blob.ObjectKey) == "" {
+		return nil, fmt.Errorf("skill blob not found")
+	}
+	if err := s.materializeLiteInstanceSkill(context.Background(), instanceID, skill, blob); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	contentHash := strings.TrimSpace(blob.ContentHash)
+	instanceSkill.SkillVersionID = &version.ID
+	instanceSkill.ObservedHash = optionalString(contentHash)
+	instanceSkill.Status = "active"
+	instanceSkill.LastSeenAt = &now
+	instanceSkill.UpdatedAt = now
+	instanceSkill.RemovedAt = nil
+	if err := s.repo.UpsertInstanceSkill(instanceSkill); err != nil {
+		return nil, err
+	}
+	if _, err := s.commandService.Create(instanceID, nil, CreateInstanceCommandRequest{
+		CommandType: InstanceCommandTypeInstallSkill,
+		Payload: map[string]interface{}{
+			"skill_id":      formatExternalSkillID(skillID),
+			"skill_version": formatExternalVersionID(version.ID),
+			"target_name":   skill.SkillKey,
+			"content_md5":   s.resolveContentMD5(blob),
+		},
+		IdempotencyKey: fmt.Sprintf("restore-skill-%d-%d-%d", instanceID, skillID, now.UnixNano()),
+		TimeoutSeconds: 300,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to queue restore skill command: %w", err)
+	}
+	items, err := s.ListInstanceSkills(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range items {
+		if candidate.SkillID == skillID {
+			return &candidate, nil
+		}
+	}
+	return nil, fmt.Errorf("instance skill not found after restore")
+}
+
+func (s *skillService) SaveBackInstanceSkillToLibrary(actorUserID int, actorRole string, instanceID, skillID int) (*SkillPayload, error) {
+	if _, err := s.requireOwnedInstanceAccess(actorUserID, actorRole, instanceID); err != nil {
+		return nil, err
+	}
+	skill, err := s.repo.GetSkillByID(skillID)
+	if err != nil {
+		return nil, err
+	}
+	if skill == nil || isDeletedSkill(skill) {
+		return nil, fmt.Errorf("skill not found")
+	}
+	if skill.UserID != actorUserID && !isAdminRole(actorRole) {
+		return nil, fmt.Errorf("access denied")
+	}
+	instanceSkill, err := s.repo.GetInstanceSkill(instanceID, skillID)
+	if err != nil {
+		return nil, err
+	}
+	if instanceSkill == nil || instanceSkill.Status == "removed" {
+		return nil, fmt.Errorf("skill not found on instance")
+	}
+	blob, err := s.collectCurrentInstanceSkillBlob(instanceID, skill, instanceSkill)
+	if err != nil {
+		return nil, err
+	}
+	if blob == nil {
+		return nil, fmt.Errorf("skill_package_pending")
+	}
+	version, err := s.ensureVersionForSkillBlob(skill.ID, blob.ID, skillSourceUploaded)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	skill.CurrentVersionID = &version.ID
+	skill.SourceType = skillSourceUploaded
+	skill.Visibility = skillVisibilityPrivate
+	skill.RiskLevel = blob.RiskLevel
+	skill.LastScannedAt = blob.LastScannedAt
+	skill.LastScanResultID = blob.LastScanResultID
+	skill.UpdatedAt = now
+	if err := s.repo.UpdateSkill(skill); err != nil {
+		return nil, err
+	}
+	version.SourceType = skillSourceUploaded
+	version.UpdatedAt = now
+	if err := s.repo.UpdateVersion(version); err != nil {
+		return nil, err
+	}
+	if err := s.rebindInstanceSkill(instanceID, skillID, skillID, &version.ID, blob.ContentHash); err != nil {
+		return nil, err
+	}
+	return s.GetSkillHubDetail(actorUserID, actorRole, skillID)
+}
+
+func (s *skillService) SaveForeignInstanceSkillToMyLibrary(actorUserID int, actorRole string, instanceID, skillID int) (*SkillPayload, error) {
+	if _, err := s.requireOwnedInstanceAccess(actorUserID, actorRole, instanceID); err != nil {
+		return nil, err
+	}
+	skill, err := s.repo.GetSkillByID(skillID)
+	if err != nil {
+		return nil, err
+	}
+	if skill == nil || isDeletedSkill(skill) {
+		return nil, fmt.Errorf("skill not found")
+	}
+	if skill.UserID == actorUserID {
+		return nil, fmt.Errorf("access denied")
+	}
+	instanceSkill, err := s.repo.GetInstanceSkill(instanceID, skillID)
+	if err != nil {
+		return nil, err
+	}
+	if instanceSkill == nil || instanceSkill.Status == "removed" {
+		return nil, fmt.Errorf("skill not found on instance")
+	}
+	blob, err := s.collectCurrentInstanceSkillBlob(instanceID, skill, instanceSkill)
+	if err != nil {
+		return nil, err
+	}
+	if blob == nil {
+		return nil, fmt.Errorf("skill_package_pending")
+	}
+
+	newKey, err := s.allocateUniqueSkillKey(actorUserID, skill.SkillKey)
+	if err != nil {
+		return nil, err
+	}
+	description := skill.Description
+	newSkill := &models.Skill{
+		UserID: actorUserID, SkillKey: newKey, Name: skill.Name, Description: description,
+		SourceType: skillSourceUploaded, Status: "active", Visibility: skillVisibilityPrivate,
+		RiskLevel: blob.RiskLevel, LastScannedAt: blob.LastScannedAt, LastScanResultID: blob.LastScanResultID,
+	}
+	if err := s.repo.CreateSkill(newSkill); err != nil {
+		return nil, err
+	}
+	version, err := s.ensureVersionForSkillBlob(newSkill.ID, blob.ID, skillSourceUploaded)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	newSkill.CurrentVersionID = &version.ID
+	newSkill.UpdatedAt = now
+	if err := s.repo.UpdateSkill(newSkill); err != nil {
+		return nil, err
+	}
+	if err := s.rebindInstanceSkill(instanceID, skillID, newSkill.ID, &version.ID, blob.ContentHash); err != nil {
+		return nil, err
+	}
+	return s.GetSkillHubDetail(actorUserID, actorRole, newSkill.ID)
+}
+
+func (s *skillService) PublishSkillAsNew(actorUserID int, actorRole string, skillID int, tagIDs []int) (*SkillPayload, error) {
+	skill, err := s.repo.GetSkillByID(skillID)
+	if err != nil {
+		return nil, err
+	}
+	if skill == nil || isDeletedSkill(skill) {
+		return nil, fmt.Errorf("skill not found")
+	}
+	if skill.UserID != actorUserID && !isAdminRole(actorRole) {
+		return nil, fmt.Errorf("skill not found")
+	}
+	blob, err := s.skillBlobForPublish(skill)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(blob.ObjectKey) == "" {
+		return nil, fmt.Errorf("skill_package_pending")
+	}
+	if !strings.EqualFold(strings.TrimSpace(blob.ScanStatus), "completed") {
+		return nil, fmt.Errorf("skill_not_scanned")
+	}
+	if !isHubPublishableBlob(blob) {
+		return nil, fmt.Errorf("skill_risk_blocked")
+	}
+	newKey, err := s.allocateUniqueSkillKey(actorUserID, skill.SkillKey)
+	if err != nil {
+		return nil, err
+	}
+	newSkill := &models.Skill{
+		UserID: actorUserID, SkillKey: newKey, Name: skill.Name, Description: skill.Description,
+		SourceType: skillSourceUploaded, Status: "active", Visibility: skillVisibilityPrivate,
+		RiskLevel: blob.RiskLevel, LastScannedAt: blob.LastScannedAt, LastScanResultID: blob.LastScanResultID,
+	}
+	if err := s.repo.CreateSkill(newSkill); err != nil {
+		return nil, err
+	}
+	version, err := s.ensureVersionForSkillBlob(newSkill.ID, blob.ID, skillSourceUploaded)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	newSkill.CurrentVersionID = &version.ID
+	newSkill.UpdatedAt = now
+	if err := s.repo.UpdateSkill(newSkill); err != nil {
+		return nil, err
+	}
+	return s.PublishToHub(actorUserID, actorRole, newSkill.ID, tagIDs)
+}
+
 func (s *skillService) ImportHubArchive(ctx context.Context, userID int, fileHeader *multipart.FileHeader) ([]SkillPayload, error) {
 	items, err := s.ImportHubArchiveWithDecisions(ctx, userID, fileHeader, nil)
 	if err != nil {

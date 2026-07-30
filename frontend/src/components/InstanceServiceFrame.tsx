@@ -1,6 +1,7 @@
 import { Maximize2, Minimize2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useInstanceDesktopAccess } from "../hooks/useInstanceDesktopAccess";
+import { clearHermesDashboardStorage, prepareHermesDashboardStorage } from "../lib/hermesDashboardStorage";
 import { prepareOpenClawControlUIStorage } from "../lib/openclawControlStorage";
 import type { InstanceAvailability } from "../types/instance";
 
@@ -44,6 +45,8 @@ export function InstanceServiceFrame({
   const frameContainerRef = useRef<HTMLElement | null>(null);
   const [preparedFrame, setPreparedFrame] = useState<PreparedFrame | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const normalizedType = instanceType?.toLowerCase() ?? "";
+  const isHermes = normalizedType === "hermes";
   const {
     embedUrl,
     loading,
@@ -82,12 +85,23 @@ export function InstanceServiceFrame({
       return;
     }
 
-    const src =
-      instanceType?.toLowerCase() === "openclaw"
-        ? prepareOpenClawControlUIStorage(instanceId, embedUrl)
-        : embedUrl;
+    let src = embedUrl;
+    if (normalizedType === "openclaw") {
+      src = prepareOpenClawControlUIStorage(instanceId, embedUrl);
+    } else if (isHermes) {
+      src = prepareHermesDashboardStorage(instanceId, embedUrl);
+    }
     setPreparedFrame({ instanceId, embedUrl, src });
-  }, [embedUrl, instanceId, instanceType]);
+  }, [embedUrl, instanceId, isHermes, normalizedType]);
+
+  useEffect(() => {
+    if (!isHermes) {
+      return;
+    }
+    return () => {
+      clearHermesDashboardStorage();
+    };
+  }, [isHermes, instanceId]);
 
   useEffect(() => {
     const handleChange = () => {
@@ -164,6 +178,7 @@ export function InstanceServiceFrame({
 
   return renderFrameShell(
       <iframe
+        key={isHermes ? `hermes-${instanceId}` : `frame-${instanceId}`}
         title={`${instanceName} service`}
         src={frameSrc}
         className="min-h-0 w-full flex-1 border-0 bg-white"

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { KeyRound, Plus, X } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { useI18n } from "../contexts/I18nContext";
-import InstanceCollapsiblePanel from "./InstanceCollapsiblePanel";
+import InstanceCollapsiblePanel, { instancePanelStorageKey } from "./InstanceCollapsiblePanel";
 import { instanceService } from "../services/instanceService";
 import { skillHubService } from "../services/skillHubService";
 import { skillService } from "../services/skillService";
@@ -125,6 +125,9 @@ type InstanceSkillCardProps = {
   onImportToLibrary: (skillId: number) => void;
   onRetryPackageCollect: (skillId: number) => void;
   onPublish: (skillId: number) => void;
+  onRestore: (skillId: number) => void;
+  onSaveBackToLibrary: (skillId: number) => void;
+  onSaveToMyLibrary: (skillId: number) => void;
   onRemove: (skillId: number) => void;
   shouldShowImportToLibrary: (skill: Skill) => boolean;
   isSkillPackagePending: (skill?: Skill) => boolean;
@@ -143,6 +146,9 @@ function InstanceSkillCard({
   onImportToLibrary,
   onRetryPackageCollect,
   onPublish,
+  onRestore,
+  onSaveBackToLibrary,
+  onSaveToMyLibrary,
   onRemove,
   shouldShowImportToLibrary,
   isSkillPackagePending,
@@ -154,6 +160,9 @@ function InstanceSkillCard({
     resolveInstanceSkillProvenance(item) === "hub_installed"
       ? t("instances.skillProvenanceInjected")
       : t("instances.skillProvenanceNative");
+  const contentDiverged = Boolean(item.content_diverged);
+  const isLibraryOwner = Boolean(item.skill && userId != null && item.skill.user_id === userId);
+  const riskLevel = contentDiverged ? "unknown" : item.skill?.risk_level;
 
   return (
     <div className="rounded-md border border-slate-200 px-3 py-3">
@@ -167,8 +176,13 @@ function InstanceSkillCard({
               {provenance}
             </span>
             <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
-              {skillRiskLabel(t, item.skill?.risk_level)}
+              {skillRiskLabel(t, riskLevel)}
             </span>
+            {contentDiverged ? (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                {t("skillHubPage.contentDiverged")}
+              </span>
+            ) : null}
             {isSkillPackagePending(item.skill) ? (
               <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-800">
                 {t("instances.skillPackageSyncing")}
@@ -186,6 +200,9 @@ function InstanceSkillCard({
               ? ` · ${t("instances.lastSeenAt", { value: formatDateTime(item.last_seen_at, locale) })}`
               : ""}
           </p>
+          {contentDiverged ? (
+            <p className="mt-1 text-xs text-amber-800">{t("skillHubPage.contentDivergedHint")}</p>
+          ) : null}
           {item.skill?.package_collect_error ? (
             <p className="mt-1 text-xs text-amber-800">{item.skill.package_collect_error}</p>
           ) : null}
@@ -206,7 +223,45 @@ function InstanceSkillCard({
                 : t("instances.retryPackageCollect")}
             </button>
           ) : null}
-          {allowImportToLibrary &&
+          {contentDiverged ? (
+            <>
+              <button
+                type="button"
+                onClick={() => onRestore(item.skill_id)}
+                disabled={actionLoading === `restore-skill-${item.skill_id}`}
+                className="app-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t("skillHubPage.restoreInstanceSkill")}
+              </button>
+              {isLibraryOwner ? (
+                <button
+                  type="button"
+                  onClick={() => onSaveBackToLibrary(item.skill_id)}
+                  disabled={
+                    actionLoading === `save-back-${item.skill_id}` ||
+                    isSkillPackagePending(item.skill)
+                  }
+                  className="app-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t("skillHubPage.saveBackToLibrary")}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onSaveToMyLibrary(item.skill_id)}
+                  disabled={
+                    actionLoading === `save-mine-${item.skill_id}` ||
+                    isSkillPackagePending(item.skill)
+                  }
+                  className="app-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t("skillHubPage.saveToMyLibrary")}
+                </button>
+              )}
+            </>
+          ) : null}
+          {!contentDiverged &&
+          allowImportToLibrary &&
           isNativeInstanceSkill(item) &&
           item.skill &&
           item.skill.user_id === userId &&
@@ -224,7 +279,8 @@ function InstanceSkillCard({
               {t("skillHubPage.importToLibrary")}
             </button>
           ) : null}
-          {item.skill &&
+          {!contentDiverged &&
+          item.skill &&
           isNativeInstanceSkill(item) &&
           item.skill.user_id === userId &&
           item.skill.source_type === "uploaded" &&
@@ -565,6 +621,54 @@ const InstanceSkillHubPanel: React.FC<InstanceSkillHubPanelProps> = ({
     }
   };
 
+  const handleRestoreInstanceSkill = async (skillId: number) => {
+    try {
+      setActionLoading(`restore-skill-${skillId}`);
+      await skillHubService.restoreInstanceSkill(instanceId, skillId);
+      await reloadSkillSection();
+    } catch (err: unknown) {
+      alert(hubErrorMessage(err, t("skillHubPage.restoreInstanceSkillFailed")));
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleSaveBackToLibrary = async (skillId: number) => {
+    try {
+      setActionLoading(`save-back-${skillId}`);
+      await skillHubService.saveBackInstanceSkillToLibrary(instanceId, skillId);
+      await reloadSkillSection();
+    } catch (err: unknown) {
+      const errorKey = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      if (errorKey === "skill_package_pending") {
+        await reloadSkillSection();
+        alert(t("skillHubPage.importToLibraryPending"));
+        return;
+      }
+      alert(hubErrorMessage(err, t("skillHubPage.saveBackToLibraryFailed")));
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleSaveToMyLibrary = async (skillId: number) => {
+    try {
+      setActionLoading(`save-mine-${skillId}`);
+      await skillHubService.saveForeignInstanceSkillToMyLibrary(instanceId, skillId);
+      await reloadSkillSection();
+    } catch (err: unknown) {
+      const errorKey = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      if (errorKey === "skill_package_pending") {
+        await reloadSkillSection();
+        alert(t("skillHubPage.importToLibraryPending"));
+        return;
+      }
+      alert(hubErrorMessage(err, t("skillHubPage.saveToMyLibraryFailed")));
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handlePublishSkillToHub = async () => {
     if (publishSkillId === null || selectedHubTagIds.length === 0) {
       alert(t("skillHubPage.errors.tagsRequired"));
@@ -744,7 +848,7 @@ const InstanceSkillHubPanel: React.FC<InstanceSkillHubPanelProps> = ({
   return (
     <>
       <InstanceCollapsiblePanel
-        storageKey={`clawmanager.instance-panel.skills.${instanceId}`}
+        storageKey={instancePanelStorageKey("skills", instanceId)}
         title={t("instances.skillManagement")}
         icon={<KeyRound className="h-4 w-4 text-indigo-600" />}
         summary={skillPanelSummary}
@@ -824,6 +928,9 @@ const InstanceSkillHubPanel: React.FC<InstanceSkillHubPanelProps> = ({
                       setPublishSkillId(skillId);
                       setSelectedHubTagIds([]);
                     }}
+                    onRestore={(skillId) => void handleRestoreInstanceSkill(skillId)}
+                    onSaveBackToLibrary={(skillId) => void handleSaveBackToLibrary(skillId)}
+                    onSaveToMyLibrary={(skillId) => void handleSaveToMyLibrary(skillId)}
                     onRemove={(skillId) => void handleRemoveSkill(skillId)}
                     shouldShowImportToLibrary={shouldShowImportToLibrary}
                     isSkillPackagePending={isSkillPackagePending}

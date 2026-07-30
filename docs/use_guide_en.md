@@ -619,8 +619,8 @@ On the left side of the Resource Management page, you can also manage resources 
 
 - **Channels**
 - **Skills**
+- **Scheduled Tasks**
 - **Agents (coming soon)**
-- **Scheduled Tasks (coming soon)**
 
 The upper-right corner of the page supports:
 

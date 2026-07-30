@@ -1977,6 +1977,66 @@ func (h *InstanceHandler) PublishInstanceSkillToHub(c *gin.Context) {
 	utils.Success(c, http.StatusOK, "Skill published to hub successfully", item)
 }
 
+func (h *InstanceHandler) RestoreInstanceSkill(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+	skillID, err := strconv.Atoi(c.Param("skillId"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "invalid skill ID")
+		return
+	}
+	userID, _ := c.Get("userID")
+	userRole, _ := c.Get("userRole")
+	item, err := h.skillService.RestoreInstanceSkill(userID.(int), userRole.(string), instance.ID, skillID)
+	if err != nil {
+		utils.HandleHubError(c, err)
+		return
+	}
+	utils.Success(c, http.StatusOK, "Skill restored on instance successfully", item)
+}
+
+func (h *InstanceHandler) SaveBackInstanceSkillToLibrary(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+	skillID, err := strconv.Atoi(c.Param("skillId"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "invalid skill ID")
+		return
+	}
+	userID, _ := c.Get("userID")
+	userRole, _ := c.Get("userRole")
+	item, err := h.skillService.SaveBackInstanceSkillToLibrary(userID.(int), userRole.(string), instance.ID, skillID)
+	if err != nil {
+		utils.HandleHubError(c, err)
+		return
+	}
+	utils.Success(c, http.StatusOK, "Skill saved back to library successfully", item)
+}
+
+func (h *InstanceHandler) SaveForeignInstanceSkillToMyLibrary(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+	skillID, err := strconv.Atoi(c.Param("skillId"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "invalid skill ID")
+		return
+	}
+	userID, _ := c.Get("userID")
+	userRole, _ := c.Get("userRole")
+	item, err := h.skillService.SaveForeignInstanceSkillToMyLibrary(userID.(int), userRole.(string), instance.ID, skillID)
+	if err != nil {
+		utils.HandleHubError(c, err)
+		return
+	}
+	utils.Success(c, http.StatusOK, "Skill saved to your library successfully", item)
+}
+
 func (h *InstanceHandler) requireOwnedInstance(c *gin.Context) (*models.Instance, bool) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)

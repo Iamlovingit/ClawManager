@@ -61,6 +61,11 @@ export const skillHubService = {
     return response.data.data;
   },
 
+  publishSkillAsNew: async (skillId: number, tagIds: number[]): Promise<Skill> => {
+    const response = await api.post(`/skill-hub/skills/${skillId}/publish-as-new`, { tag_ids: tagIds });
+    return response.data.data;
+  },
+
   unpublishSkill: async (skillId: number): Promise<Skill> => {
     const response = await api.post(`/skill-hub/skills/${skillId}/unpublish`);
     return response.data.data;
@@ -96,6 +101,21 @@ export const skillHubService = {
 
   importInstanceSkill: async (instanceId: number, skillId: number): Promise<Skill> => {
     const response = await api.post(`/instances/${instanceId}/skills/${skillId}/import-to-library`);
+    return response.data.data;
+  },
+
+  restoreInstanceSkill: async (instanceId: number, skillId: number): Promise<InstanceSkill> => {
+    const response = await api.post(`/instances/${instanceId}/skills/${skillId}/restore`);
+    return response.data.data;
+  },
+
+  saveBackInstanceSkillToLibrary: async (instanceId: number, skillId: number): Promise<Skill> => {
+    const response = await api.post(`/instances/${instanceId}/skills/${skillId}/save-back-to-library`);
+    return response.data.data;
+  },
+
+  saveForeignInstanceSkillToMyLibrary: async (instanceId: number, skillId: number): Promise<Skill> => {
+    const response = await api.post(`/instances/${instanceId}/skills/${skillId}/save-to-my-library`);
     return response.data.data;
   },
 

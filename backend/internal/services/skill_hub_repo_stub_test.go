@@ -53,7 +53,20 @@ func (s *skillRepoStub) GetSkillByUserKey(userID int, skillKey string) (*models.
 	return nil, nil
 }
 
-func (s *skillRepoStub) CreateSkill(*models.Skill) error { return nil }
+func (s *skillRepoStub) CreateSkill(skill *models.Skill) error {
+	if s.skills == nil {
+		s.skills = map[int]*models.Skill{}
+	}
+	if skill.ID == 0 {
+		skill.ID = len(s.skills) + 1
+		for s.skills[skill.ID] != nil {
+			skill.ID++
+		}
+	}
+	copy := *skill
+	s.skills[skill.ID] = &copy
+	return nil
+}
 func (s *skillRepoStub) UpdateSkill(skill *models.Skill) error {
 	if s.skills == nil {
 		s.skills = map[int]*models.Skill{}
@@ -68,7 +81,15 @@ func (s *skillRepoStub) DeleteSkill(int) error {
 	return nil
 }
 
-func (s *skillRepoStub) GetBlobByContentHash(string) (*models.SkillBlob, error) { return nil, nil }
+func (s *skillRepoStub) GetBlobByContentHash(hash string) (*models.SkillBlob, error) {
+	for _, blob := range s.blobs {
+		if blob != nil && blob.ContentHash == hash {
+			copy := *blob
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
 
 func (s *skillRepoStub) GetBlobByID(id int) (*models.SkillBlob, error) {
 	if blob, ok := s.blobs[id]; ok {
@@ -109,15 +130,44 @@ func (s *skillRepoStub) GetVersionByID(id int) (*models.SkillVersion, error) {
 	return nil, nil
 }
 
-func (s *skillRepoStub) GetVersionBySkillAndBlob(int, int) (*models.SkillVersion, error) {
+func (s *skillRepoStub) GetVersionBySkillAndBlob(skillID, blobID int) (*models.SkillVersion, error) {
+	for _, version := range s.versions {
+		if version != nil && version.SkillID == skillID && version.BlobID == blobID {
+			copy := *version
+			return &copy, nil
+		}
+	}
 	return nil, nil
 }
 
-func (s *skillRepoStub) GetLatestVersionBySkillID(int) (*models.SkillVersion, error) {
-	return nil, nil
+func (s *skillRepoStub) GetLatestVersionBySkillID(skillID int) (*models.SkillVersion, error) {
+	var latest *models.SkillVersion
+	for _, version := range s.versions {
+		if version == nil || version.SkillID != skillID {
+			continue
+		}
+		if latest == nil || version.VersionNo > latest.VersionNo || (version.VersionNo == latest.VersionNo && version.ID > latest.ID) {
+			copy := *version
+			latest = &copy
+		}
+	}
+	return latest, nil
 }
 
-func (s *skillRepoStub) CreateVersion(*models.SkillVersion) error { return nil }
+func (s *skillRepoStub) CreateVersion(version *models.SkillVersion) error {
+	if s.versions == nil {
+		s.versions = map[int]*models.SkillVersion{}
+	}
+	if version.ID == 0 {
+		version.ID = len(s.versions) + 1
+		for s.versions[version.ID] != nil {
+			version.ID++
+		}
+	}
+	copy := *version
+	s.versions[version.ID] = &copy
+	return nil
+}
 
 func (s *skillRepoStub) UpdateVersion(version *models.SkillVersion) error {
 	if s.versions == nil {
@@ -128,8 +178,14 @@ func (s *skillRepoStub) UpdateVersion(version *models.SkillVersion) error {
 	return nil
 }
 
-func (s *skillRepoStub) ListInstanceSkills(int) ([]models.InstanceSkill, error) {
-	return nil, nil
+func (s *skillRepoStub) ListInstanceSkills(instanceID int) ([]models.InstanceSkill, error) {
+	items := make([]models.InstanceSkill, 0)
+	for _, item := range s.instanceSkills {
+		if item.InstanceID == instanceID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 func (s *skillRepoStub) ListActiveInstanceSkillsBySkillID(skillID int) ([]models.InstanceSkill, error) {
@@ -166,8 +222,36 @@ func (s *skillRepoStub) GetInstanceSkill(instanceID, skillID int) (*models.Insta
 	}
 	return nil, nil
 }
-func (s *skillRepoStub) UpsertInstanceSkill(*models.InstanceSkill) error            { return nil }
-func (s *skillRepoStub) MarkInstanceSkillRemoved(int, int, time.Time) error         { return nil }
+func (s *skillRepoStub) UpsertInstanceSkill(item *models.InstanceSkill) error {
+	for i, existing := range s.instanceSkills {
+		if existing.InstanceID == item.InstanceID && existing.SkillID == item.SkillID {
+			copy := *item
+			if copy.ID == 0 {
+				copy.ID = existing.ID
+			}
+			s.instanceSkills[i] = copy
+			return nil
+		}
+	}
+	copy := *item
+	if copy.ID == 0 {
+		copy.ID = len(s.instanceSkills) + 1
+	}
+	s.instanceSkills = append(s.instanceSkills, copy)
+	return nil
+}
+func (s *skillRepoStub) MarkInstanceSkillRemoved(instanceID, skillID int, observedAt time.Time) error {
+	for i := range s.instanceSkills {
+		item := &s.instanceSkills[i]
+		if item.InstanceID == instanceID && item.SkillID == skillID {
+			item.Status = "removed"
+			item.RemovedAt = &observedAt
+			item.UpdatedAt = observedAt
+			return nil
+		}
+	}
+	return nil
+}
 func (s *skillRepoStub) MarkInstanceSkillRemovedBySkillKey(int, string, time.Time) error {
 	return nil
 }

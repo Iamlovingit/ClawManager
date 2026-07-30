@@ -109,6 +109,8 @@ export interface InstanceSkill {
   install_path?: string;
   workspace_dir?: string;
   observed_hash?: string;
+  installed_content_hash?: string;
+  content_diverged?: boolean;
   status: string;
   last_seen_at?: string;
   removed_at?: string;

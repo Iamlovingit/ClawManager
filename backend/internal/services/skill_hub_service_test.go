@@ -955,3 +955,249 @@ func TestDownloadSkillNilSafe(t *testing.T) {
 		t.Fatal("expected error when blob is missing")
 	}
 }
+
+func TestIsInstanceSkillContentDiverged(t *testing.T) {
+	hash := "abc"
+	if isInstanceSkillContentDiverged(nil, hash) {
+		t.Fatal("nil observed should not diverge")
+	}
+	same := "abc"
+	if isInstanceSkillContentDiverged(&same, hash) {
+		t.Fatal("equal hashes should not diverge")
+	}
+	other := "def"
+	if !isInstanceSkillContentDiverged(&other, hash) {
+		t.Fatal("different hashes should diverge")
+	}
+}
+
+func TestSaveBackInstanceSkillToLibrarySetsPrivateAndNewVersion(t *testing.T) {
+	versionID := 10
+	blobID := 20
+	newBlobID := 30
+	scanID := 99
+	publishedAt := time.Now().UTC().Add(-time.Hour)
+	oldHash := "oldhash000000000000000000000001"
+	newHash := "newhash000000000000000000000001"
+	stub := &skillRepoStub{
+		skills: map[int]*models.Skill{
+			1: {
+				ID: 1, UserID: 1, SkillKey: "demo", Name: "Demo", Status: skillStatusActive,
+				SourceType: skillSourceUploaded, Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+				PublishedAt: &publishedAt, PublishedBy: skillTestIntPtr(1),
+			},
+		},
+		versions: map[int]*models.SkillVersion{
+			versionID: {ID: versionID, SkillID: 1, BlobID: blobID, VersionNo: 1, SourceType: skillSourceUploaded},
+		},
+		blobs: map[int]*models.SkillBlob{
+			blobID: {
+				ID: blobID, ContentHash: oldHash, ObjectKey: "user/1/demo/old.zip",
+				ScanStatus: "completed", RiskLevel: skillRiskNone, LastScanResultID: &scanID,
+			},
+			newBlobID: {
+				ID: newBlobID, ContentHash: newHash, ObjectKey: "user/1/demo/new.zip",
+				ScanStatus: "completed", RiskLevel: skillRiskNone, LastScanResultID: &scanID,
+			},
+		},
+		instanceSkills: []models.InstanceSkill{{
+			InstanceID: 1, SkillID: 1, SkillVersionID: &versionID, Status: "active",
+			SourceType: "injected_by_clawmanager", ObservedHash: &newHash,
+		}},
+		tagAssignments: map[int][]int{},
+	}
+	instRepo := &importTestInstanceRepo{instances: map[int]*models.Instance{1: {ID: 1, UserID: 1}}}
+	svc := &skillService{repo: stub, instanceRepo: instRepo, commandService: &noopInstanceCommandService{}}
+	payload, err := svc.SaveBackInstanceSkillToLibrary(1, "user", 1, 1)
+	if err != nil {
+		t.Fatalf("SaveBackInstanceSkillToLibrary() error = %v", err)
+	}
+	if stub.skills[1].Visibility != skillVisibilityPrivate {
+		t.Fatalf("visibility = %q, want private", stub.skills[1].Visibility)
+	}
+	if stub.skills[1].CurrentVersionID == nil || *stub.skills[1].CurrentVersionID == versionID {
+		t.Fatalf("current_version_id = %v, want new version", stub.skills[1].CurrentVersionID)
+	}
+	newVersion := stub.versions[*stub.skills[1].CurrentVersionID]
+	if newVersion == nil || newVersion.BlobID != newBlobID {
+		t.Fatalf("new version = %#v, want blob %d", newVersion, newBlobID)
+	}
+	if payload == nil || payload.Visibility != skillVisibilityPrivate {
+		t.Fatalf("payload visibility = %v", payload)
+	}
+}
+
+func TestSaveForeignInstanceSkillToMyLibraryForksPrivateSkill(t *testing.T) {
+	versionID := 10
+	blobID := 20
+	newBlobID := 30
+	scanID := 99
+	oldHash := "oldhash000000000000000000000002"
+	newHash := "newhash000000000000000000000002"
+	stub := &skillRepoStub{
+		skills: map[int]*models.Skill{
+			1: {
+				ID: 1, UserID: 9, SkillKey: "shared", Name: "Shared", Status: skillStatusActive,
+				SourceType: skillSourceUploaded, Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+			},
+		},
+		versions: map[int]*models.SkillVersion{
+			versionID: {ID: versionID, SkillID: 1, BlobID: blobID, VersionNo: 1, SourceType: skillSourceUploaded},
+		},
+		blobs: map[int]*models.SkillBlob{
+			blobID: {
+				ID: blobID, ContentHash: oldHash, ObjectKey: "user/9/shared/old.zip",
+				ScanStatus: "completed", RiskLevel: skillRiskNone, LastScanResultID: &scanID,
+			},
+			newBlobID: {
+				ID: newBlobID, ContentHash: newHash, ObjectKey: "user/1/shared/new.zip",
+				ScanStatus: "completed", RiskLevel: skillRiskNone, LastScanResultID: &scanID,
+			},
+		},
+		instanceSkills: []models.InstanceSkill{{
+			InstanceID: 1, SkillID: 1, SkillVersionID: &versionID, Status: "active",
+			SourceType: "injected_by_clawmanager", ObservedHash: &newHash,
+		}},
+		tagAssignments: map[int][]int{},
+	}
+	instRepo := &importTestInstanceRepo{instances: map[int]*models.Instance{1: {ID: 1, UserID: 1}}}
+	svc := &skillService{repo: stub, instanceRepo: instRepo, commandService: &noopInstanceCommandService{}}
+	payload, err := svc.SaveForeignInstanceSkillToMyLibrary(1, "user", 1, 1)
+	if err != nil {
+		t.Fatalf("SaveForeignInstanceSkillToMyLibrary() error = %v", err)
+	}
+	if stub.skills[1].Visibility != skillVisibilityPublic || stub.skills[1].UserID != 9 {
+		t.Fatalf("original skill mutated: %#v", stub.skills[1])
+	}
+	if payload == nil || payload.UserID != 1 || payload.Visibility != skillVisibilityPrivate {
+		t.Fatalf("forked payload = %#v", payload)
+	}
+	var removedOld bool
+	var boundNew bool
+	for _, item := range stub.instanceSkills {
+		if item.SkillID == 1 && item.Status == "removed" {
+			removedOld = true
+		}
+		if item.SkillID == payload.ID && item.Status == "active" {
+			boundNew = true
+		}
+	}
+	if !removedOld || !boundNew {
+		t.Fatalf("instance rebind failed: removedOld=%v boundNew=%v items=%#v", removedOld, boundNew, stub.instanceSkills)
+	}
+}
+
+func TestSaveForeignInstanceSkillToMyLibraryRejectsOwner(t *testing.T) {
+	versionID := 10
+	blobID := 20
+	stub := &skillRepoStub{
+		skills: map[int]*models.Skill{
+			1: {
+				ID: 1, UserID: 1, SkillKey: "mine", Name: "Mine", Status: skillStatusActive,
+				SourceType: skillSourceUploaded, Visibility: skillVisibilityPrivate, CurrentVersionID: &versionID,
+			},
+		},
+		versions:       map[int]*models.SkillVersion{versionID: {ID: versionID, SkillID: 1, BlobID: blobID}},
+		blobs:          map[int]*models.SkillBlob{blobID: {ID: blobID, ContentHash: "h", ObjectKey: "k", ScanStatus: "completed", RiskLevel: skillRiskNone}},
+		instanceSkills: []models.InstanceSkill{{InstanceID: 1, SkillID: 1, Status: "active", SourceType: "injected_by_clawmanager"}},
+	}
+	instRepo := &importTestInstanceRepo{instances: map[int]*models.Instance{1: {ID: 1, UserID: 1}}}
+	svc := &skillService{repo: stub, instanceRepo: instRepo, commandService: &noopInstanceCommandService{}}
+	_, err := svc.SaveForeignInstanceSkillToMyLibrary(1, "user", 1, 1)
+	if err == nil || err.Error() != "access denied" {
+		t.Fatalf("expected access denied, got %v", err)
+	}
+}
+
+func TestPublishSkillAsNewKeepsOriginalPrivate(t *testing.T) {
+	versionID := 10
+	blobID := 20
+	scanID := 99
+	stub := &skillRepoStub{
+		skills: map[int]*models.Skill{
+			1: {
+				ID: 1, UserID: 1, SkillKey: "demo", Name: "Demo", Status: skillStatusActive,
+				SourceType: skillSourceUploaded, Visibility: skillVisibilityPrivate, CurrentVersionID: &versionID,
+			},
+		},
+		versions: map[int]*models.SkillVersion{
+			versionID: {ID: versionID, SkillID: 1, BlobID: blobID, VersionNo: 1, SourceType: skillSourceUploaded},
+		},
+		blobs: map[int]*models.SkillBlob{
+			blobID: {
+				ID: blobID, ContentHash: "hash", ObjectKey: "user/1/demo.zip",
+				ScanStatus: "completed", RiskLevel: skillRiskNone, LastScanResultID: &scanID,
+			},
+		},
+		tags: map[int]*models.SkillHubTag{
+			1: {ID: 1, TagKey: "coding", Name: "Coding", AdminOnly: false},
+		},
+		tagAssignments: map[int][]int{},
+	}
+	svc := &skillService{repo: stub}
+	payload, err := svc.PublishSkillAsNew(1, "user", 1, []int{1})
+	if err != nil {
+		t.Fatalf("PublishSkillAsNew() error = %v", err)
+	}
+	if stub.skills[1].Visibility != skillVisibilityPrivate {
+		t.Fatalf("original visibility = %q, want private", stub.skills[1].Visibility)
+	}
+	if payload == nil || payload.ID == 1 || payload.Visibility != skillVisibilityPublic {
+		t.Fatalf("new skill payload = %#v", payload)
+	}
+	if stub.skills[payload.ID] == nil || stub.skills[payload.ID].Visibility != skillVisibilityPublic {
+		t.Fatalf("new skill not public in repo: %#v", stub.skills[payload.ID])
+	}
+}
+
+func TestRestoreInstanceSkillUsesLockedVersion(t *testing.T) {
+	versionID := 10
+	currentVersionID := 11
+	blobID := 20
+	currentBlobID := 21
+	oldHash := "oldhash000000000000000000000003"
+	newHash := "newhash000000000000000000000003"
+	observed := newHash
+	stub := &skillRepoStub{
+		skills: map[int]*models.Skill{
+			1: {
+				ID: 1, UserID: 1, SkillKey: "demo", Name: "Demo", Status: skillStatusActive,
+				SourceType: skillSourceUploaded, Visibility: skillVisibilityPublic, CurrentVersionID: &currentVersionID,
+			},
+		},
+		versions: map[int]*models.SkillVersion{
+			versionID:        {ID: versionID, SkillID: 1, BlobID: blobID, VersionNo: 1},
+			currentVersionID: {ID: currentVersionID, SkillID: 1, BlobID: currentBlobID, VersionNo: 2},
+		},
+		blobs: map[int]*models.SkillBlob{
+			blobID:        {ID: blobID, ContentHash: oldHash, ObjectKey: "user/1/old.zip", ScanStatus: "completed", RiskLevel: skillRiskNone},
+			currentBlobID: {ID: currentBlobID, ContentHash: "hub-latest", ObjectKey: "user/1/latest.zip", ScanStatus: "completed", RiskLevel: skillRiskNone},
+		},
+		instanceSkills: []models.InstanceSkill{{
+			InstanceID: 1, SkillID: 1, SkillVersionID: &versionID, Status: "active",
+			SourceType: "injected_by_clawmanager", ObservedHash: &observed,
+		}},
+		tagAssignments: map[int][]int{},
+	}
+	instRepo := &importTestInstanceRepo{instances: map[int]*models.Instance{1: {ID: 1, UserID: 1}}}
+	cmdSvc := &capturingInstanceCommandService{}
+	svc := &skillService{repo: stub, instanceRepo: instRepo, commandService: cmdSvc}
+	item, err := svc.RestoreInstanceSkill(1, "user", 1, 1)
+	if err != nil {
+		t.Fatalf("RestoreInstanceSkill() error = %v", err)
+	}
+	if stub.skills[1].CurrentVersionID == nil || *stub.skills[1].CurrentVersionID != currentVersionID {
+		t.Fatalf("hub current version changed: %v", stub.skills[1].CurrentVersionID)
+	}
+	if item.ObservedHash == nil || *item.ObservedHash != oldHash {
+		t.Fatalf("observed hash = %v, want locked %q", item.ObservedHash, oldHash)
+	}
+	if item.ContentDiverged {
+		t.Fatalf("content_diverged should be false after restore, got %v", item.ContentDiverged)
+	}
+	if len(cmdSvc.created) == 0 || cmdSvc.created[0].CommandType != InstanceCommandTypeInstallSkill {
+		t.Fatalf("expected install_skill command, got %#v", cmdSvc.created)
+	}
+}
+
+func skillTestIntPtr(v int) *int { return &v }

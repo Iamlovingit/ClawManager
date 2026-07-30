@@ -33,6 +33,7 @@ const SkillHubPage: React.FC = () => {
   const [selectedTag, setSelectedTag] = useState('');
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [publishSkillId, setPublishSkillId] = useState<number | null>(null);
+  const [publishMode, setPublishMode] = useState<'publish' | 'publish-as-new'>('publish');
   const [editTagsSkillId, setEditTagsSkillId] = useState<number | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [installSkillId, setInstallSkillId] = useState<number | null>(null);
@@ -193,6 +194,9 @@ const SkillHubPage: React.FC = () => {
       setPendingUploadFile(file);
       setImportPreviewItems(preview);
       setImportDialogOpen(true);
+      // Release upload loading while the user decides; otherwise conflict
+      // dialog buttons stay disabled (loading === upload) and deadlock.
+      setActionLoading('');
       pendingImportResolverRef.current = { resolve, reject };
     });
   };
@@ -216,6 +220,9 @@ const SkillHubPage: React.FC = () => {
           const results = await importSingleArchive(file);
           allResults.push(...results);
         } catch (err: unknown) {
+          if (err instanceof Error && err.message === 'import_cancelled') {
+            continue;
+          }
           errors.push(`${file.name}: ${(err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('skillHubPage.errors.upload')}`);
         }
       }
@@ -273,10 +280,16 @@ const SkillHubPage: React.FC = () => {
     try {
       setActionLoading(`publish-${publishSkillId}`);
       setError(null);
-      await skillHubService.publishSkill(publishSkillId, selectedTagIds);
+      if (publishMode === 'publish-as-new') {
+        await skillHubService.publishSkillAsNew(publishSkillId, selectedTagIds);
+        setNotice(t('skillHubPage.notices.publishedAsNew'));
+      } else {
+        await skillHubService.publishSkill(publishSkillId, selectedTagIds);
+        setNotice(t('skillHubPage.notices.published'));
+      }
       setPublishSkillId(null);
+      setPublishMode('publish');
       setSelectedTagIds([]);
-      setNotice(t('skillHubPage.notices.published'));
       await refreshAll();
     } catch (err: unknown) {
       setError((err as { response?: { data?: { error?: string } } })?.response?.data?.error || t('skillHubPage.errors.publish'));
@@ -460,20 +473,20 @@ const SkillHubPage: React.FC = () => {
             ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
+            {tab === 'catalog' || tab === 'mine' ? (
+              <button type="button" className="app-button-primary" onClick={() => setInstallSkillId(skill.id)}>
+                {t('skillHubPage.installBatch')}
+              </button>
+            ) : null}
             {tab === 'catalog' ? (
-              <>
-                <button type="button" className="app-button-primary" onClick={() => setInstallSkillId(skill.id)}>
-                  {t('skillHubPage.installBatch')}
-                </button>
-                <button
-                  type="button"
-                  className="app-button-secondary"
-                  disabled={actionLoading === `download-${skill.id}`}
-                  onClick={() => void handleDownload(skill)}
-                >
-                  {t('skillHubPage.download')}
-                </button>
-              </>
+              <button
+                type="button"
+                className="app-button-secondary"
+                disabled={actionLoading === `download-${skill.id}`}
+                onClick={() => void handleDownload(skill)}
+              >
+                {t('skillHubPage.download')}
+              </button>
             ) : null}
             {(tab === 'mine' || tab === 'admin') && skill.visibility === 'public' ? (
               <button
@@ -486,17 +499,34 @@ const SkillHubPage: React.FC = () => {
               </button>
             ) : null}
             {canPublishManage && skill.visibility !== 'public' ? (
-              <button
-                type="button"
-                className="app-button-secondary"
-                disabled={!skill.publishable || actionLoading === `publish-${skill.id}`}
-                onClick={() => {
-                  setPublishSkillId(skill.id);
-                  setSelectedTagIds((skill.tags || []).filter((tag) => !tag.admin_only).map((tag) => tag.id));
-                }}
-              >
-                {t('skillHubPage.publish')}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="app-button-secondary"
+                  disabled={!skill.publishable || actionLoading === `publish-${skill.id}`}
+                  onClick={() => {
+                    setPublishMode('publish');
+                    setPublishSkillId(skill.id);
+                    setSelectedTagIds((skill.tags || []).filter((tag) => !tag.admin_only).map((tag) => tag.id));
+                  }}
+                >
+                  {skill.published_at ? t('skillHubPage.replacePublish') : t('skillHubPage.publish')}
+                </button>
+                {skill.published_at ? (
+                  <button
+                    type="button"
+                    className="app-button-secondary"
+                    disabled={!skill.publishable || actionLoading === `publish-${skill.id}`}
+                    onClick={() => {
+                      setPublishMode('publish-as-new');
+                      setPublishSkillId(skill.id);
+                      setSelectedTagIds((skill.tags || []).filter((tag) => !tag.admin_only).map((tag) => tag.id));
+                    }}
+                  >
+                    {t('skillHubPage.publishAsNew')}
+                  </button>
+                ) : null}
+              </>
             ) : null}
             {canPublishManage && skill.visibility === 'public' ? (
               <>
@@ -607,7 +637,7 @@ const SkillHubPage: React.FC = () => {
               <button
                 type="button"
                 className="app-button-primary whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={uploadFiles.length === 0 || actionLoading === 'upload'}
+                disabled={uploadFiles.length === 0 || actionLoading === 'upload' || importDialogOpen}
                 onClick={() => void handleUpload()}
               >
                 {t('skillHubPage.upload')}
@@ -630,7 +660,9 @@ const SkillHubPage: React.FC = () => {
       {publishSkillId !== null ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-lg rounded-[24px] bg-white p-6 shadow-xl">
-            <h2 className="text-lg font-semibold text-[#1d1713]">{t('skillHubPage.publish')}</h2>
+            <h2 className="text-lg font-semibold text-[#1d1713]">
+              {publishMode === 'publish-as-new' ? t('skillHubPage.publishAsNew') : t('skillHubPage.publish')}
+            </h2>
             <p className="mt-2 text-sm text-[#6f6158]">{t('skillHubPage.selectTags')}</p>
             <div className="mt-4 flex flex-wrap gap-2">
               {visibleTags.map((tag) => (
@@ -641,8 +673,19 @@ const SkillHubPage: React.FC = () => {
               ))}
             </div>
             <div className="mt-6 flex justify-end gap-2">
-              <button type="button" className="app-button-secondary" onClick={() => setPublishSkillId(null)}>{t('common.cancel')}</button>
-              <button type="button" className="app-button-primary" onClick={() => void handlePublish()}>{t('skillHubPage.publish')}</button>
+              <button
+                type="button"
+                className="app-button-secondary"
+                onClick={() => {
+                  setPublishSkillId(null);
+                  setPublishMode('publish');
+                }}
+              >
+                {t('common.cancel')}
+              </button>
+              <button type="button" className="app-button-primary" onClick={() => void handlePublish()}>
+                {publishMode === 'publish-as-new' ? t('skillHubPage.publishAsNew') : t('skillHubPage.publish')}
+              </button>
             </div>
           </div>
         </div>

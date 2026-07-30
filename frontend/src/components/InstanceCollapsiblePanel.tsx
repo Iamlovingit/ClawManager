@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useI18n } from "../contexts/I18nContext";
 
@@ -14,7 +14,7 @@ type Props = {
   children: React.ReactNode;
 };
 
-function readStoredCollapsed(storageKey: string, defaultCollapsed: boolean): boolean {
+export function readStoredCollapsed(storageKey: string, defaultCollapsed: boolean): boolean {
   try {
     const stored = localStorage.getItem(storageKey);
     if (stored === "true") {
@@ -27,6 +27,13 @@ function readStoredCollapsed(storageKey: string, defaultCollapsed: boolean): boo
     // ignore storage failures
   }
   return defaultCollapsed;
+}
+
+export function instancePanelStorageKey(
+  panel: "skills" | "session-usage",
+  instanceId: number,
+): string {
+  return `clawmanager.instance-panel.${panel}.${instanceId}`;
 }
 
 export default function InstanceCollapsiblePanel({
@@ -42,6 +49,7 @@ export default function InstanceCollapsiblePanel({
 }: Props) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(() => readStoredCollapsed(storageKey, defaultCollapsed));
+  const skipNextPersistRef = useRef(false);
 
   const toggle = () => {
     setCollapsed((current) => {
@@ -52,10 +60,19 @@ export default function InstanceCollapsiblePanel({
   };
 
   useEffect(() => {
+    skipNextPersistRef.current = true;
+    setCollapsed(readStoredCollapsed(storageKey, defaultCollapsed));
+  }, [storageKey, defaultCollapsed]);
+
+  useEffect(() => {
     onExpandedChange?.(!collapsed);
   }, [collapsed, onExpandedChange]);
 
   useEffect(() => {
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
     try {
       localStorage.setItem(storageKey, String(collapsed));
     } catch {

@@ -7,6 +7,14 @@ import {
   findOpenClawChannelTemplate,
   OPENCLAW_CHANNEL_TEMPLATES,
 } from "../../lib/openclawChannelTemplates";
+import {
+  buildScheduledTaskContent,
+  patchFromSchedulePreset,
+  readScheduledTaskFormState,
+  resolveSchedulePreset,
+  validateScheduledTaskContent,
+  type ScheduledTaskSchedulePreset,
+} from "../../lib/openclawScheduledTaskForm";
 import { openclawConfigService } from "../../services/openclawConfigService";
 import { skillService } from "../../services/skillService";
 import { skillHubService } from "../../services/skillHubService";
@@ -36,6 +44,7 @@ const CONFIG_CENTER_RESOURCE_TYPES = OPENCLAW_RESOURCE_TYPES.filter(
 const CONFIG_CENTER_CONFIGURABLE_RESOURCE_TYPES: OpenClawResourceType[] = [
   "channel",
   "skill",
+  "scheduled_task",
 ];
 const CONFIG_CENTER_PAGE_SIZE = 8;
 
@@ -130,9 +139,30 @@ const defaultContentByType: Record<OpenClawResourceType, string> = {
     {
       schemaVersion: 1,
       kind: "scheduled_task",
-      format: "task/default@v1",
+      format: "task/openclaw-cron@v1",
       dependsOn: [],
-      config: {},
+      config: {
+        name: "daily-brief",
+        description: "",
+        enabled: true,
+        deleteAfterRun: false,
+        schedule: {
+          kind: "cron",
+          expr: "0 9 * * *",
+          tz: "Asia/Shanghai",
+        },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: {
+          kind: "agentTurn",
+          message: "Summarize overnight updates and send a short brief.",
+        },
+        delivery: {
+          mode: "announce",
+          channel: "last",
+          bestEffort: true,
+        },
+      },
     },
     null,
     2,
@@ -895,6 +925,10 @@ const OpenClawConfigCenterPage: React.FC = () => {
     useState("");
   const [channelEditorMode, setChannelEditorMode] =
     useState<ChannelEditorMode>("form");
+  const [scheduledTaskEditorMode, setScheduledTaskEditorMode] =
+    useState<ChannelEditorMode>("form");
+  const [scheduledTaskJobNameLocked, setScheduledTaskJobNameLocked] =
+    useState(false);
   const [skillUploadFile, setSkillUploadFile] = useState<File | null>(null);
   const [importPreviewItems, setImportPreviewItems] = useState<SkillImportPreviewItem[]>([]);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
@@ -1096,6 +1130,13 @@ const OpenClawConfigCenterPage: React.FC = () => {
         : null,
     [resourceForm.contentText, supportedChannelEditor],
   );
+  const scheduledTaskForm = useMemo(
+    () =>
+      resourceForm.resource_type === "scheduled_task"
+        ? readScheduledTaskFormState(resourceForm.contentText)
+        : null,
+    [resourceForm.contentText, resourceForm.resource_type],
+  );
   const selectedResourceTypeOption = useMemo(
     () => resourceTypeOptions.find((item) => item.value === resourceType),
     [resourceType, resourceTypeOptions],
@@ -1132,6 +1173,8 @@ const OpenClawConfigCenterPage: React.FC = () => {
     setSelectedResourceId(undefined);
     setSelectedChannelTemplateId("");
     setChannelEditorMode("form");
+    setScheduledTaskEditorMode("form");
+    setScheduledTaskJobNameLocked(false);
     setResourceForm(newResourceForm(resourceType));
     setResourceEditorOpen(true);
   };
@@ -1142,8 +1185,21 @@ const OpenClawConfigCenterPage: React.FC = () => {
     setSelectedResourceId(item.id);
     setSelectedChannelTemplateId("");
     setChannelEditorMode("form");
+    setScheduledTaskEditorMode("form");
+    const nextForm = resourceFormFromItem(item);
+    if (item.resource_type === "scheduled_task") {
+      const taskForm = readScheduledTaskFormState(nextForm.contentText);
+      setScheduledTaskJobNameLocked(
+        Boolean(
+          taskForm?.name.trim() &&
+            taskForm.name.trim() !== item.name.trim(),
+        ),
+      );
+    } else {
+      setScheduledTaskJobNameLocked(false);
+    }
     setResourceType(item.resource_type);
-    setResourceForm(resourceFormFromItem(item));
+    setResourceForm(nextForm);
     setResourceEditorOpen(true);
   };
 
@@ -1190,6 +1246,22 @@ const OpenClawConfigCenterPage: React.FC = () => {
       setError(null);
       setNotice(null);
 
+      let contentText = resourceForm.contentText;
+      if (resourceForm.resource_type === "scheduled_task") {
+        const resourceName = resourceForm.name.trim();
+        if (resourceName && !scheduledTaskJobNameLocked) {
+          contentText = buildScheduledTaskContent(contentText, {
+            name: resourceName,
+          });
+        }
+        const validationError = validateScheduledTaskContent(contentText);
+        if (validationError) {
+          throw new Error(
+            t(`openClawResourcesPage.scheduledTask.errors.${validationError}`),
+          );
+        }
+      }
+
       const payload: UpsertOpenClawConfigResourceRequest = {
         resource_type: resourceForm.resource_type,
         resource_key: resourceForm.resource_key.trim(),
@@ -1201,10 +1273,10 @@ const OpenClawConfigCenterPage: React.FC = () => {
           resourceForm.resource_type === "channel"
             ? buildChannelEnvelopeForRequest(
                 resourceForm.resource_key,
-                resourceForm.contentText,
+                contentText,
                 t("openClawResourcesPage.invalidChannelJson"),
               )
-            : JSON.parse(resourceForm.contentText),
+            : JSON.parse(contentText),
       };
 
       const saved = resourceForm.id
@@ -2135,6 +2207,10 @@ const OpenClawConfigCenterPage: React.FC = () => {
                   if (nextType !== "channel") {
                     setSelectedChannelTemplateId("");
                   }
+                  if (nextType === "scheduled_task") {
+                    setScheduledTaskEditorMode("form");
+                    setScheduledTaskJobNameLocked(false);
+                  }
                   setResourceForm((current) => ({
                     ...current,
                     resource_type: nextType,
@@ -2173,12 +2249,25 @@ const OpenClawConfigCenterPage: React.FC = () => {
               </label>
               <input
                 value={resourceForm.name}
-                onChange={(e) =>
-                  setResourceForm((current) => ({
-                    ...current,
-                    name: e.target.value,
-                  }))
-                }
+                onChange={(e) => {
+                  const nextName = e.target.value;
+                  setResourceForm((current) => {
+                    if (
+                      current.resource_type !== "scheduled_task" ||
+                      scheduledTaskJobNameLocked
+                    ) {
+                      return { ...current, name: nextName };
+                    }
+                    return {
+                      ...current,
+                      name: nextName,
+                      contentText: buildScheduledTaskContent(
+                        current.contentText,
+                        { name: nextName },
+                      ),
+                    };
+                  });
+                }}
                 className="app-input mt-1 w-full"
               />
             </div>
@@ -2402,6 +2491,568 @@ const OpenClawConfigCenterPage: React.FC = () => {
                         className="app-input mt-1 min-h-[280px] w-full font-mono text-xs"
                         spellCheck={false}
                       />
+                    </div>
+                  )}
+                </div>
+              ) : resourceForm.resource_type === "scheduled_task" ? (
+                <div className="rounded-2xl border border-[#eadfd8] bg-[#fffaf7] p-4">
+                  <div>
+                    <div className="text-sm font-medium text-gray-700">
+                      {t("openClawResourcesPage.scheduledTask.editorTitle")}
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-gray-600">
+                      {t("openClawResourcesPage.scheduledTask.editorHint")}
+                    </p>
+                  </div>
+
+                  {scheduledTaskForm ? (
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">
+                          {t("openClawResourcesPage.scheduledTask.simple.prompt")}
+                        </label>
+                        <textarea
+                          value={
+                            scheduledTaskForm.payloadKind === "systemEvent"
+                              ? scheduledTaskForm.payloadText
+                              : scheduledTaskForm.payloadMessage
+                          }
+                          onChange={(e) =>
+                            setResourceForm((current) => ({
+                              ...current,
+                              contentText: buildScheduledTaskContent(
+                                current.contentText,
+                                scheduledTaskForm.payloadKind === "systemEvent"
+                                  ? { payloadText: e.target.value }
+                                  : { payloadMessage: e.target.value },
+                              ),
+                            }))
+                          }
+                          className="app-input mt-1 min-h-[100px] w-full"
+                          placeholder={t(
+                            "openClawResourcesPage.scheduledTask.simple.promptPlaceholder",
+                          )}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            {t("openClawResourcesPage.scheduledTask.simple.when")}
+                          </label>
+                          <select
+                            value={resolveSchedulePreset(scheduledTaskForm)}
+                            onChange={(e) => {
+                              const preset = e.target
+                                .value as ScheduledTaskSchedulePreset;
+                              setResourceForm((current) => ({
+                                ...current,
+                                contentText: buildScheduledTaskContent(
+                                  current.contentText,
+                                  patchFromSchedulePreset(preset),
+                                ),
+                              }));
+                            }}
+                            className="app-input mt-1 w-full"
+                          >
+                            <option value="daily9">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.presets.daily9",
+                              )}
+                            </option>
+                            <option value="hourly">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.presets.hourly",
+                              )}
+                            </option>
+                            <option value="every5m">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.presets.every5m",
+                              )}
+                            </option>
+                            <option value="custom">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.presets.custom",
+                              )}
+                            </option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            {t(
+                              "openClawResourcesPage.scheduledTask.simple.where",
+                            )}
+                          </label>
+                          <select
+                            value={scheduledTaskForm.deliveryMode}
+                            onChange={(e) =>
+                              setResourceForm((current) => ({
+                                ...current,
+                                contentText: buildScheduledTaskContent(
+                                  current.contentText,
+                                  {
+                                    deliveryMode: e.target
+                                      .value as typeof scheduledTaskForm.deliveryMode,
+                                    ...(e.target.value === "announce"
+                                      ? { deliveryChannel: "last" }
+                                      : {}),
+                                  },
+                                ),
+                              }))
+                            }
+                            className="app-input mt-1 w-full"
+                          >
+                            <option value="announce">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.deliveryOptions.announce",
+                              )}
+                            </option>
+                            <option value="webhook">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.deliveryOptions.webhook",
+                              )}
+                            </option>
+                            <option value="none">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.deliveryOptions.none",
+                              )}
+                            </option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {resolveSchedulePreset(scheduledTaskForm) === "custom" &&
+                        scheduledTaskForm.scheduleKind === "cron" && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              {t(
+                                "openClawResourcesPage.scheduledTask.fields.expr",
+                              )}
+                            </label>
+                            <input
+                              value={scheduledTaskForm.scheduleExpr}
+                              onChange={(e) =>
+                                setResourceForm((current) => ({
+                                  ...current,
+                                  contentText: buildScheduledTaskContent(
+                                    current.contentText,
+                                    { scheduleExpr: e.target.value },
+                                  ),
+                                }))
+                              }
+                              className="app-input mt-1 w-full"
+                              placeholder="0 9 * * *"
+                            />
+                          </div>
+                        )}
+
+                      {resolveSchedulePreset(scheduledTaskForm) === "custom" &&
+                        scheduledTaskForm.scheduleKind !== "cron" && (
+                          <div className="rounded-xl border border-[#eadfd8] bg-white px-4 py-3 text-sm text-[#6e6460]">
+                            {t(
+                              "openClawResourcesPage.scheduledTask.simple.customAdvancedScheduleHint",
+                            )}
+                          </div>
+                        )}
+
+                      {scheduledTaskForm.deliveryMode === "webhook" && (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            {t(
+                              "openClawResourcesPage.scheduledTask.fields.deliveryTo",
+                            )}
+                          </label>
+                          <input
+                            value={scheduledTaskForm.deliveryTo}
+                            onChange={(e) =>
+                              setResourceForm((current) => ({
+                                ...current,
+                                contentText: buildScheduledTaskContent(
+                                  current.contentText,
+                                  { deliveryTo: e.target.value },
+                                ),
+                              }))
+                            }
+                            className="app-input mt-1 w-full"
+                            placeholder="https://example.com/hook"
+                          />
+                        </div>
+                      )}
+
+                      <details className="rounded-xl border border-[#eadfd8] bg-white px-4 py-3">
+                        <summary className="cursor-pointer text-sm font-medium text-gray-700">
+                          {t(
+                            "openClawResourcesPage.scheduledTask.advancedTitle",
+                          )}
+                        </summary>
+                        <p className="mt-2 text-xs leading-5 text-gray-600">
+                          {t(
+                            "openClawResourcesPage.scheduledTask.advancedHint",
+                          )}
+                        </p>
+
+                        <div className="mt-3 inline-flex rounded-full border border-[#eadfd8] bg-[#fffaf7] p-1">
+                          {(["form", "json"] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setScheduledTaskEditorMode(mode)}
+                              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                                scheduledTaskEditorMode === mode
+                                  ? "bg-[#171212] text-white"
+                                  : "text-[#6e6460] hover:bg-[#f5ece7]"
+                              }`}
+                            >
+                              {mode === "form"
+                                ? t("openClawResourcesPage.editorModes.form")
+                                : t("openClawResourcesPage.editorModes.json")}
+                            </button>
+                          ))}
+                        </div>
+
+                        {scheduledTaskEditorMode === "json" ? (
+                          <div className="mt-4">
+                            <label className="block text-sm font-medium text-gray-700">
+                              {t("openClawResourcesPage.contentJson")}
+                            </label>
+                            <textarea
+                              value={resourceForm.contentText}
+                              onChange={(e) =>
+                                setResourceForm((current) => ({
+                                  ...current,
+                                  contentText: e.target.value,
+                                }))
+                              }
+                              className="app-input mt-1 min-h-[280px] w-full font-mono text-xs"
+                              spellCheck={false}
+                            />
+                          </div>
+                        ) : (
+                          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700">
+                                {t(
+                                  "openClawResourcesPage.scheduledTask.fields.name",
+                                )}
+                              </label>
+                              <input
+                                value={scheduledTaskForm.name}
+                                onChange={(e) => {
+                                  setScheduledTaskJobNameLocked(true);
+                                  setResourceForm((current) => ({
+                                    ...current,
+                                    contentText: buildScheduledTaskContent(
+                                      current.contentText,
+                                      { name: e.target.value },
+                                    ),
+                                  }));
+                                }}
+                                className="app-input mt-1 w-full"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700">
+                                {t(
+                                  "openClawResourcesPage.scheduledTask.fields.jobDescription",
+                                )}
+                              </label>
+                              <input
+                                value={scheduledTaskForm.description}
+                                onChange={(e) =>
+                                  setResourceForm((current) => ({
+                                    ...current,
+                                    contentText: buildScheduledTaskContent(
+                                      current.contentText,
+                                      { description: e.target.value },
+                                    ),
+                                  }))
+                                }
+                                className="app-input mt-1 w-full"
+                              />
+                            </div>
+                            <label className="flex items-center gap-2 text-sm text-gray-700 md:col-span-2">
+                              <input
+                                type="checkbox"
+                                checked={scheduledTaskForm.deleteAfterRun}
+                                onChange={(e) =>
+                                  setResourceForm((current) => ({
+                                    ...current,
+                                    contentText: buildScheduledTaskContent(
+                                      current.contentText,
+                                      { deleteAfterRun: e.target.checked },
+                                    ),
+                                  }))
+                                }
+                              />
+                              {t(
+                                "openClawResourcesPage.scheduledTask.fields.deleteAfterRun",
+                              )}
+                            </label>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700">
+                                {t(
+                                  "openClawResourcesPage.scheduledTask.fields.scheduleKind",
+                                )}
+                              </label>
+                              <select
+                                value={scheduledTaskForm.scheduleKind}
+                                onChange={(e) =>
+                                  setResourceForm((current) => ({
+                                    ...current,
+                                    contentText: buildScheduledTaskContent(
+                                      current.contentText,
+                                      {
+                                        scheduleKind: e.target
+                                          .value as typeof scheduledTaskForm.scheduleKind,
+                                      },
+                                    ),
+                                  }))
+                                }
+                                className="app-input mt-1 w-full"
+                              >
+                                <option value="cron">cron</option>
+                                <option value="every">every</option>
+                                <option value="at">at</option>
+                              </select>
+                            </div>
+                            {scheduledTaskForm.scheduleKind === "cron" && (
+                              <>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700">
+                                    {t(
+                                      "openClawResourcesPage.scheduledTask.fields.expr",
+                                    )}
+                                  </label>
+                                  <input
+                                    value={scheduledTaskForm.scheduleExpr}
+                                    onChange={(e) =>
+                                      setResourceForm((current) => ({
+                                        ...current,
+                                        contentText: buildScheduledTaskContent(
+                                          current.contentText,
+                                          { scheduleExpr: e.target.value },
+                                        ),
+                                      }))
+                                    }
+                                    className="app-input mt-1 w-full"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700">
+                                    {t(
+                                      "openClawResourcesPage.scheduledTask.fields.tz",
+                                    )}
+                                  </label>
+                                  <input
+                                    value={scheduledTaskForm.scheduleTz}
+                                    onChange={(e) =>
+                                      setResourceForm((current) => ({
+                                        ...current,
+                                        contentText: buildScheduledTaskContent(
+                                          current.contentText,
+                                          { scheduleTz: e.target.value },
+                                        ),
+                                      }))
+                                    }
+                                    className="app-input mt-1 w-full"
+                                  />
+                                </div>
+                              </>
+                            )}
+                            {scheduledTaskForm.scheduleKind === "every" && (
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700">
+                                  {t(
+                                    "openClawResourcesPage.scheduledTask.fields.everyMs",
+                                  )}
+                                </label>
+                                <input
+                                  value={scheduledTaskForm.scheduleEveryMs}
+                                  onChange={(e) =>
+                                    setResourceForm((current) => ({
+                                      ...current,
+                                      contentText: buildScheduledTaskContent(
+                                        current.contentText,
+                                        { scheduleEveryMs: e.target.value },
+                                      ),
+                                    }))
+                                  }
+                                  className="app-input mt-1 w-full"
+                                />
+                              </div>
+                            )}
+                            {scheduledTaskForm.scheduleKind === "at" && (
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700">
+                                  {t(
+                                    "openClawResourcesPage.scheduledTask.fields.at",
+                                  )}
+                                </label>
+                                <input
+                                  value={scheduledTaskForm.scheduleAt}
+                                  onChange={(e) =>
+                                    setResourceForm((current) => ({
+                                      ...current,
+                                      contentText: buildScheduledTaskContent(
+                                        current.contentText,
+                                        { scheduleAt: e.target.value },
+                                      ),
+                                    }))
+                                  }
+                                  className="app-input mt-1 w-full"
+                                  placeholder="2026-07-23T10:00:00Z"
+                                />
+                              </div>
+                            )}
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700">
+                                {t(
+                                  "openClawResourcesPage.scheduledTask.fields.sessionTarget",
+                                )}
+                              </label>
+                              <select
+                                value={scheduledTaskForm.sessionTarget}
+                                onChange={(e) =>
+                                  setResourceForm((current) => ({
+                                    ...current,
+                                    contentText: buildScheduledTaskContent(
+                                      current.contentText,
+                                      {
+                                        sessionTarget: e.target
+                                          .value as typeof scheduledTaskForm.sessionTarget,
+                                      },
+                                    ),
+                                  }))
+                                }
+                                className="app-input mt-1 w-full"
+                              >
+                                <option value="isolated">isolated</option>
+                                <option value="main">main</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700">
+                                {t(
+                                  "openClawResourcesPage.scheduledTask.fields.wakeMode",
+                                )}
+                              </label>
+                              <select
+                                value={scheduledTaskForm.wakeMode}
+                                onChange={(e) =>
+                                  setResourceForm((current) => ({
+                                    ...current,
+                                    contentText: buildScheduledTaskContent(
+                                      current.contentText,
+                                      {
+                                        wakeMode: e.target
+                                          .value as typeof scheduledTaskForm.wakeMode,
+                                      },
+                                    ),
+                                  }))
+                                }
+                                className="app-input mt-1 w-full"
+                              >
+                                <option value="now">now</option>
+                                <option value="next-heartbeat">
+                                  next-heartbeat
+                                </option>
+                              </select>
+                            </div>
+                            {scheduledTaskForm.payloadKind === "agentTurn" && (
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700">
+                                  {t(
+                                    "openClawResourcesPage.scheduledTask.fields.payloadModel",
+                                  )}
+                                </label>
+                                <input
+                                  value={scheduledTaskForm.payloadModel}
+                                  onChange={(e) =>
+                                    setResourceForm((current) => ({
+                                      ...current,
+                                      contentText: buildScheduledTaskContent(
+                                        current.contentText,
+                                        { payloadModel: e.target.value },
+                                      ),
+                                    }))
+                                  }
+                                  className="app-input mt-1 w-full"
+                                  placeholder="optional model override"
+                                />
+                              </div>
+                            )}
+                            {scheduledTaskForm.deliveryMode === "announce" && (
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700">
+                                  {t(
+                                    "openClawResourcesPage.scheduledTask.fields.deliveryChannel",
+                                  )}
+                                </label>
+                                <input
+                                  value={scheduledTaskForm.deliveryChannel}
+                                  onChange={(e) =>
+                                    setResourceForm((current) => ({
+                                      ...current,
+                                      contentText: buildScheduledTaskContent(
+                                        current.contentText,
+                                        { deliveryChannel: e.target.value },
+                                      ),
+                                    }))
+                                  }
+                                  className="app-input mt-1 w-full"
+                                />
+                              </div>
+                            )}
+                            {(scheduledTaskForm.deliveryMode === "announce" ||
+                              scheduledTaskForm.deliveryMode === "webhook") && (
+                              <label className="flex items-center gap-2 text-sm text-gray-700 md:col-span-2">
+                                <input
+                                  type="checkbox"
+                                  checked={scheduledTaskForm.deliveryBestEffort}
+                                  onChange={(e) =>
+                                    setResourceForm((current) => ({
+                                      ...current,
+                                      contentText: buildScheduledTaskContent(
+                                        current.contentText,
+                                        {
+                                          deliveryBestEffort: e.target.checked,
+                                        },
+                                      ),
+                                    }))
+                                  }
+                                />
+                                {t(
+                                  "openClawResourcesPage.scheduledTask.fields.deliveryBestEffort",
+                                )}
+                              </label>
+                            )}
+                          </div>
+                        )}
+                      </details>
+                    </div>
+                  ) : (
+                    <div className="mt-4 space-y-4">
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                        {t(
+                          "openClawResourcesPage.scheduledTask.errors.invalid_json",
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">
+                          {t("openClawResourcesPage.contentJson")}
+                        </label>
+                        <textarea
+                          value={resourceForm.contentText}
+                          onChange={(e) =>
+                            setResourceForm((current) => ({
+                              ...current,
+                              contentText: e.target.value,
+                            }))
+                          }
+                          className="app-input mt-1 min-h-[280px] w-full font-mono text-xs"
+                          spellCheck={false}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>

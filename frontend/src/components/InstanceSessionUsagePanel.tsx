@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { BarChart3, ChevronDown, ChevronUp, Download, RefreshCw, Search } from "lucide-react";
 import { useI18n } from "../contexts/I18nContext";
-import InstanceCollapsiblePanel from "./InstanceCollapsiblePanel";
+import InstanceCollapsiblePanel, { instancePanelStorageKey } from "./InstanceCollapsiblePanel";
 import { instanceService } from "../services/instanceService";
 import type {
   InstanceSessionUsageDetail,
@@ -225,7 +225,7 @@ export default function InstanceSessionUsagePanel({
 
   return (
     <InstanceCollapsiblePanel
-      storageKey={`clawmanager.instance-panel.session-usage.${instanceId}`}
+      storageKey={instancePanelStorageKey("session-usage", instanceId)}
       title={t("instances.sessionUsage.title")}
       icon={<BarChart3 className="h-4 w-4 text-indigo-600" />}
       summary={sessionPanelSummary}

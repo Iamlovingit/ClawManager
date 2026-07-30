@@ -65,6 +65,11 @@ const OpenClawConfigPlanSection: React.FC<OpenClawConfigPlanSectionProps> = ({
     () => resources.filter((resource) => resource.resource_type === "channel"),
     [resources],
   );
+  const scheduledTaskResources = useMemo(
+    () =>
+      resources.filter((resource) => resource.resource_type === "scheduled_task"),
+    [resources],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -248,6 +253,49 @@ const OpenClawConfigPlanSection: React.FC<OpenClawConfigPlanSectionProps> = ({
               {channelResources.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-gray-300 px-4 py-3 text-sm text-gray-500">
                   {t("openClawInjectionSection.noChannelResources")}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#b46c50]">
+              {t("openClawInjectionSection.scheduledTask")}
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {scheduledTaskResources.map((item) => {
+                const checked = resourceIds.includes(item.id);
+                return (
+                  <label
+                    key={item.id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 ${checked ? "border-indigo-300 bg-indigo-50" : "border-gray-200 bg-white"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) =>
+                        onSelectionChange({
+                          bundleId: undefined,
+                          resourceIds: e.target.checked
+                            ? [...resourceIds, item.id]
+                            : resourceIds.filter((value) => value !== item.id),
+                        })
+                      }
+                    />
+                    <span>
+                      <span className="block font-medium text-gray-900">
+                        {item.name}
+                      </span>
+                      <span className="mt-1 block text-xs text-gray-500">
+                        {item.resource_key}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+              {scheduledTaskResources.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-gray-300 px-4 py-3 text-sm text-gray-500">
+                  {t("openClawInjectionSection.noScheduledTaskResources")}
                 </div>
               )}
             </div>
