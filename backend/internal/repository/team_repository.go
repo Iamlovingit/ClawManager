@@ -421,7 +421,7 @@ UPDATE team_tasks
 SET status = ?, workflow_state = ?, plan_version = ?, ledger_version = ?, current_phase_id = ?,
     accepted_completion_id = ?, result_json = ?, error_message = ?, finished_at = ?, updated_at = ?
 WHERE id = ? AND ledger_version = ? AND accepted_completion_id IS NULL
-  AND status NOT IN (?, ?, ?)
+  AND status NOT IN (?, ?)
 `,
 			task.Status,
 			task.WorkflowState,
@@ -437,7 +437,6 @@ WHERE id = ? AND ledger_version = ? AND accepted_completion_id IS NULL
 			expectedLedgerVersion,
 			models.TeamTaskStatusSucceeded,
 			models.TeamTaskStatusFailed,
-			models.TeamTaskStatusStale,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to atomically accept team completion: %w", err)
@@ -669,6 +668,12 @@ func (r *teamRepository) UpsertWorkItem(item *models.TeamWorkItem) error {
 		}
 		if item.ValidatedRevision == nil && !newRevision && !reopeningCurrent {
 			item.ValidatedRevision = existing.ValidatedRevision
+		}
+		if item.ReviewTargetAssignmentID == nil && !newRevision && !reopeningCurrent {
+			item.ReviewTargetAssignmentID = existing.ReviewTargetAssignmentID
+		}
+		if item.ReviewTargetRevision == nil && !newRevision && !reopeningCurrent {
+			item.ReviewTargetRevision = existing.ReviewTargetRevision
 		}
 		if existing.ReviewRequired && !newRevision && !reopeningCurrent {
 			item.ReviewRequired = true

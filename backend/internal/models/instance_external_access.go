@@ -7,6 +7,7 @@ type InstanceExternalAccess struct {
 	InstanceID      int        `db:"instance_id" json:"instance_id"`
 	Enabled         bool       `db:"enabled" json:"enabled"`
 	AuthMode        string     `db:"auth_mode" json:"auth_mode"`
+	WorkspaceAccess string     `db:"workspace_access" json:"workspace_access"`
 	PublicSlug      *string    `db:"public_slug" json:"-"`
 	PublicTokenHash *string    `db:"public_token_hash" json:"-"`
 	ShortCodeHash   *string    `db:"short_code_hash" json:"-"`

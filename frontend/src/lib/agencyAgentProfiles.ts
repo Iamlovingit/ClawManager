@@ -38,9 +38,20 @@ export type AgencyAgentProfile = {
 const COMMON_COLLABORATION_RULES = [
   "Only handle tasks addressed to this team member inbox.",
   "Use /team for shared context, durable notes, and handoff artifacts.",
+  "Browser is available to OpenClaw Team workers. When team_artifact_preview is exposed, use its managed URL for Team files; older Runtimes may require static file inspection. Never use file:// or a temporary server.",
   "Report progress, blockers, verification evidence, and final results through the team event channel.",
   "Ask the Leader to coordinate cross-member dependencies instead of silently taking over another role.",
 ];
+
+const collaborationRulesForProfile = (
+  profile: AgencyAgentProfile,
+): string[] =>
+  Array.from(
+    new Set([
+      ...COMMON_COLLABORATION_RULES,
+      ...profile.collaborationRules,
+    ]),
+  );
 
 export const AGENCY_AGENT_PROFILES: Record<
   AgencyAgentProfileKey,
@@ -193,7 +204,7 @@ export const AGENCY_AGENT_PROFILES: Record<
     summary:
       "Performs proportionate, static-first review of correctness, maintainability, regression risk, security, and existing test evidence.",
     systemPrompt:
-      "You are the Code Reviewer. Start with source, diffs, architecture boundaries, and existing test evidence. Keep review proportional to the change, report only concrete findings, and do not target a fixed issue count. Do not install or download browsers, drivers, frameworks, package dependencies, or system packages for review. Browser checks are normally unnecessary; if explicitly useful and already available, try startup at most twice and stop Browser setup after 45 seconds before continuing with static review.",
+      "You are the Code Reviewer. Start with source, diffs, architecture boundaries, and existing test evidence. Browser is available; when team_artifact_preview is exposed, use its managed URL for Team files, and on an older Runtime without it continue with static file review. Use Browser only when interaction or rendering materially affects the verdict. Keep Browser verification brief; after any Browser/environment error or exhausted budget, immediately continue with static review. Never install dependencies, start a temporary server, bypass navigation policy, or retry Browser setup. Report only concrete findings and state whether the conclusion is browser-verified or static-only.",
     collaborationRules: COMMON_COLLABORATION_RULES,
     outputContract: [
       "findings",
@@ -212,7 +223,7 @@ export const AGENCY_AGENT_PROFILES: Record<
     summary:
       "Performs proportionate, static-first validation with available evidence and a concise pass/fail verdict.",
     systemPrompt:
-      "You are the Evidence Collector. Validate with source, artifacts, and tools already available. Report only actual findings and do not target a fixed issue count. Browser checks are optional unless explicitly required: try startup at most twice and stop Browser setup after 45 seconds. Never install or download browsers, drivers, test frameworks, package dependencies, or system packages for verification. If Browser is unavailable, record browserVerification=unavailable and continue with static/manual checks without treating the environment limitation as a product defect.",
+      "You are the Evidence Collector. Validate with source, artifacts, and tools already available. Browser is available; when team_artifact_preview is exposed, use its managed URL for Team files, and on an older Runtime without it continue with static file review. Use Browser only when interaction or visual evidence materially affects the verdict; for non-code or non-interactive work, proceed directly with static review. Keep Browser verification brief; after any Browser/environment error or exhausted budget, immediately continue with static review. Never install dependencies, start a temporary server, bypass navigation policy, or retry Browser setup. Environment limitations are not product defects. Say Browser verification passed only when it actually ran; otherwise state that the conclusion is static-only.",
     collaborationRules: COMMON_COLLABORATION_RULES,
     outputContract: [
       "verdict",
@@ -363,6 +374,7 @@ export const buildAgencyAgentEnvironment = (
     return undefined;
   }
 
+  const collaborationRules = collaborationRulesForProfile(profile);
   const payload = {
     schemaVersion: 1,
     items: [
@@ -389,7 +401,7 @@ export const buildAgencyAgentEnvironment = (
             roleHint: profile.roleHint,
             summary: profile.summary,
             systemPrompt: profile.systemPrompt,
-            collaborationRules: profile.collaborationRules,
+            collaborationRules,
             outputContract: profile.outputContract,
           },
         },
@@ -402,7 +414,7 @@ export const buildAgencyAgentEnvironment = (
     `Team member context: member_id=${context.memberId}; display_name=${context.displayName}; role=${context.role}; runtime=${context.runtimeType}; is_leader=${context.isLeader}.`,
     `Role summary: ${profile.summary}`,
     "Collaboration rules:",
-    ...profile.collaborationRules.map((rule) => `- ${rule}`),
+    ...collaborationRules.map((rule) => `- ${rule}`),
     `Expected output contract: ${profile.outputContract.join(", ")}.`,
   ].join("\n");
   const persona = JSON.stringify({

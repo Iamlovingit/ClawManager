@@ -22,6 +22,20 @@ interface WorkspaceFileManagerProps {
   initialPath?: string;
   onMutation?: () => void | Promise<void>;
   refreshKey?: number;
+  service?: WorkspaceFileOperations;
+  workspaceKey?: string | number;
+  canWrite?: boolean;
+}
+
+export interface WorkspaceFileOperations {
+  list(instanceId: number, path?: string): Promise<WorkspaceEntry[]>;
+  preview(instanceId: number, path: string): Promise<WorkspacePreview>;
+  previewBlob(instanceId: number, path: string): Promise<Blob>;
+  downloadBlob(instanceId: number, path: string): Promise<Blob>;
+  upload(instanceId: number, path: string, file: File): Promise<void>;
+  mkdir(instanceId: number, path: string): Promise<void>;
+  rename(instanceId: number, oldPath: string, newPath: string): Promise<void>;
+  remove(instanceId: number, path: string): Promise<void>;
 }
 
 const invalidNamePattern = /[\\/]/;
@@ -206,8 +220,17 @@ function EntryIcon({ entry }: { entry: WorkspaceEntry }) {
   return <File className="h-4 w-4 text-slate-500" />;
 }
 
-export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refreshKey }: WorkspaceFileManagerProps) {
+export function WorkspaceFileManager({
+  instanceId,
+  initialPath,
+  onMutation,
+  refreshKey,
+  service = workspaceService,
+  workspaceKey,
+  canWrite = true,
+}: WorkspaceFileManagerProps) {
   const queryClient = useQueryClient();
+  const cacheKey = workspaceKey ?? instanceId;
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const folderUploadInputRef = useRef<HTMLInputElement | null>(null);
   const uploadMenuRef = useRef<HTMLDivElement | null>(null);
@@ -224,7 +247,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
   useEffect(() => {
     setCurrentPath(normalizeWorkspacePath(initialPath));
     setPreviewPath(null);
-  }, [instanceId, initialPath]);
+  }, [cacheKey, initialPath]);
 
   useEffect(() => {
     if (!uploadMenuOpen) {
@@ -250,13 +273,13 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
   }, [uploadMenuOpen]);
 
   const entriesQuery = useQuery({
-    queryKey: ["workspace", instanceId, currentPath],
-    queryFn: () => workspaceService.list(instanceId, currentPath),
+    queryKey: ["workspace", cacheKey, currentPath],
+    queryFn: () => service.list(instanceId, currentPath),
   });
 
   const previewQuery = useQuery({
-    queryKey: ["workspace-preview", instanceId, previewPath],
-    queryFn: () => workspaceService.preview(instanceId, previewPath ?? ""),
+    queryKey: ["workspace-preview", cacheKey, previewPath],
+    queryFn: () => service.preview(instanceId, previewPath ?? ""),
     enabled: Boolean(previewPath),
   });
 
@@ -273,7 +296,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
       return;
     }
 
-    workspaceService
+    service
       .previewBlob(instanceId, previewPath)
       .then((blob) => {
         if (!disposed) {
@@ -291,7 +314,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
     return () => {
       disposed = true;
     };
-  }, [instanceId, previewPath, previewQuery.data]);
+  }, [instanceId, previewPath, previewQuery.data, service]);
 
   useEffect(() => {
     return () => {
@@ -304,7 +327,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
 
   const invalidateCurrentPath = async () => {
     await queryClient.invalidateQueries({
-      queryKey: ["workspace", instanceId, currentPath],
+      queryKey: ["workspace", cacheKey, currentPath],
     });
   };
 
@@ -313,9 +336,9 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
       return;
     }
     void queryClient.invalidateQueries({
-      queryKey: ["workspace", instanceId, currentPath],
+      queryKey: ["workspace", cacheKey, currentPath],
     });
-  }, [currentPath, instanceId, queryClient, refreshKey]);
+  }, [cacheKey, currentPath, queryClient, refreshKey]);
 
   const notifyMutation = async () => {
     await onMutation?.();
@@ -351,7 +374,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
     void runAction("upload", async () => {
       for (const [index, file] of files.entries()) {
         setUploadStatus(`Uploading ${index + 1}/${files.length}`);
-        await workspaceService.upload(instanceId, currentPath, file);
+        await service.upload(instanceId, currentPath, file);
       }
       await invalidateCurrentPath();
       await notifyMutation();
@@ -369,7 +392,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
       for (const [index, directory] of directories.entries()) {
         setUploadStatus(`Creating folders ${index + 1}/${directories.length}`);
         try {
-          await workspaceService.mkdir(instanceId, joinPath(currentPath, directory));
+          await service.mkdir(instanceId, joinPath(currentPath, directory));
         } catch (err: unknown) {
           if (!isWorkspaceEntryExistsError(err)) {
             throw err;
@@ -383,7 +406,11 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
           continue;
         }
         setUploadStatus(`Uploading ${index + 1}/${files.length}`);
-        await workspaceService.upload(instanceId, joinPath(currentPath, parentPath(relativePath)), file);
+        await service.upload(
+          instanceId,
+          joinPath(currentPath, parentPath(relativePath)),
+          file,
+        );
       }
       await invalidateCurrentPath();
       await notifyMutation();
@@ -407,7 +434,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
       return;
     }
     void runAction("mkdir", async () => {
-      await workspaceService.mkdir(instanceId, joinPath(currentPath, name));
+      await service.mkdir(instanceId, joinPath(currentPath, name));
       await invalidateCurrentPath();
       await notifyMutation();
     });
@@ -419,7 +446,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
       return;
     }
     void runAction(`rename:${entry.path}`, async () => {
-      await workspaceService.rename(instanceId, entry.path, joinPath(parentPath(entry.path), name));
+      await service.rename(instanceId, entry.path, joinPath(parentPath(entry.path), name));
       if (previewPath === entry.path) {
         setPreviewPath(null);
       }
@@ -433,7 +460,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
       return;
     }
     void runAction(`delete:${entry.path}`, async () => {
-      await workspaceService.remove(instanceId, entry.path);
+      await service.remove(instanceId, entry.path);
       if (previewPath === entry.path || previewPath?.startsWith(`${entry.path}/`)) {
         setPreviewPath(null);
       }
@@ -444,7 +471,7 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
 
   const handleDownload = (entry: WorkspaceEntry) => {
     void runAction(`download:${entry.path}`, async () => {
-      const blob = await workspaceService.downloadBlob(instanceId, entry.path);
+      const blob = await service.downloadBlob(instanceId, entry.path);
       downloadBlob(blob, entry.name || fileName(entry.path));
     });
   };
@@ -472,21 +499,25 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <input
-            ref={uploadInputRef}
-            type="file"
-            className="hidden"
-            multiple
-            onChange={(event) => handleUploadFiles(event.target.files)}
-          />
-          <input
-            ref={folderUploadInputRef}
-            type="file"
-            className="hidden"
-            multiple
-            {...{ webkitdirectory: "", directory: "" }}
-            onChange={(event) => handleUploadFolder(event.target.files)}
-          />
+          {canWrite && (
+            <>
+              <input
+                ref={uploadInputRef}
+                type="file"
+                className="hidden"
+                multiple
+                onChange={(event) => handleUploadFiles(event.target.files)}
+              />
+              <input
+                ref={folderUploadInputRef}
+                type="file"
+                className="hidden"
+                multiple
+                {...{ webkitdirectory: "", directory: "" }}
+                onChange={(event) => handleUploadFolder(event.target.files)}
+              />
+            </>
+          )}
           <button
             type="button"
             className="cm-icon-button"
@@ -495,47 +526,51 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
           >
             <RefreshCw className={`h-4 w-4 ${entriesQuery.isFetching ? "animate-spin" : ""}`} />
           </button>
-          <button type="button" className="cm-icon-button" title="New folder" onClick={handleMkdir}>
-            <FolderPlus className="h-4 w-4" />
-          </button>
-          <div ref={uploadMenuRef} className="relative">
-            <button
-              type="button"
-              className="cm-icon-button"
-              title="Upload"
-              aria-haspopup="menu"
-              aria-expanded={uploadMenuOpen}
-              disabled={busyAction === "upload" || busyAction === "upload-folder"}
-              onClick={() => setUploadMenuOpen((open) => !open)}
-            >
-              <Upload className="h-4 w-4" />
-            </button>
-            {uploadMenuOpen && (
-              <div
-                role="menu"
-                className="absolute right-0 top-full z-20 mt-2 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg"
-              >
+          {canWrite && (
+            <>
+              <button type="button" className="cm-icon-button" title="New folder" onClick={handleMkdir}>
+                <FolderPlus className="h-4 w-4" />
+              </button>
+              <div ref={uploadMenuRef} className="relative">
                 <button
                   type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-                  onClick={openFileUploadPicker}
+                  className="cm-icon-button"
+                  title="Upload"
+                  aria-haspopup="menu"
+                  aria-expanded={uploadMenuOpen}
+                  disabled={busyAction === "upload" || busyAction === "upload-folder"}
+                  onClick={() => setUploadMenuOpen((open) => !open)}
                 >
-                  <Upload className="h-4 w-4 text-slate-500" />
-                  <span>上传文件</span>
+                  <Upload className="h-4 w-4" />
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
-                  onClick={openFolderUploadPicker}
-                >
-                  <FolderUp className="h-4 w-4 text-slate-500" />
-                  <span>上传文件夹</span>
-                </button>
+                {uploadMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full z-20 mt-2 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      onClick={openFileUploadPicker}
+                    >
+                      <Upload className="h-4 w-4 text-slate-500" />
+                      <span>上传文件</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      onClick={openFolderUploadPicker}
+                    >
+                      <FolderUp className="h-4 w-4 text-slate-500" />
+                      <span>上传文件夹</span>
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -617,24 +652,28 @@ export function WorkspaceFileManager({ instanceId, initialPath, onMutation, refr
                             <Download className="h-4 w-4" />
                           </button>
                         )}
-                        <button
-                          type="button"
-                          className="cm-icon-button h-8 w-8"
-                          title="Rename"
-                          onClick={() => handleRename(entry)}
-                          disabled={busyAction === `rename:${entry.path}`}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          className="cm-icon-button h-8 w-8 border-red-200 text-red-600 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
-                          title="Delete"
-                          onClick={() => handleDelete(entry)}
-                          disabled={busyAction === `delete:${entry.path}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                        {canWrite && (
+                          <>
+                            <button
+                              type="button"
+                              className="cm-icon-button h-8 w-8"
+                              title="Rename"
+                              onClick={() => handleRename(entry)}
+                              disabled={busyAction === `rename:${entry.path}`}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              className="cm-icon-button h-8 w-8 border-red-200 text-red-600 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
+                              title="Delete"
+                              onClick={() => handleDelete(entry)}
+                              disabled={busyAction === `delete:${entry.path}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>

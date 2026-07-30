@@ -57,13 +57,14 @@ func (r *instanceExternalAccessRepository) Upsert(ctx context.Context, access *m
 	access.UpdatedAt = now
 	_, err := r.sess.SQL().ExecContext(ctx, `
 		INSERT INTO instance_external_access (
-			instance_id, enabled, auth_mode, public_slug, short_code_hash, public_token_hash,
+			instance_id, enabled, auth_mode, workspace_access, public_slug, short_code_hash, public_token_hash,
 			api_key_hash, password_value, api_key_prefix, expires_at, created_by,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			enabled = VALUES(enabled),
 			auth_mode = VALUES(auth_mode),
+			workspace_access = VALUES(workspace_access),
 			public_slug = VALUES(public_slug),
 			short_code_hash = VALUES(short_code_hash),
 			public_token_hash = VALUES(public_token_hash),
@@ -73,7 +74,7 @@ func (r *instanceExternalAccessRepository) Upsert(ctx context.Context, access *m
 			expires_at = VALUES(expires_at),
 			created_by = VALUES(created_by),
 			updated_at = VALUES(updated_at)
-	`, access.InstanceID, access.Enabled, access.AuthMode, access.PublicSlug, access.ShortCodeHash, access.PublicTokenHash,
+	`, access.InstanceID, access.Enabled, access.AuthMode, access.WorkspaceAccess, access.PublicSlug, access.ShortCodeHash, access.PublicTokenHash,
 		access.PasswordHash, access.PasswordValue, access.PasswordHint, access.ExpiresAt, access.CreatedBy,
 		access.CreatedAt, access.UpdatedAt)
 	if err != nil {

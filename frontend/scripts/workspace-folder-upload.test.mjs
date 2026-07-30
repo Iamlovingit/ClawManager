@@ -36,8 +36,8 @@ assert(
 
 assert(
   source.includes("collectFolderUploadDirectories") &&
-    source.includes("workspaceService.mkdir") &&
-    source.includes("workspaceService.upload"),
+    source.includes("service.mkdir") &&
+    source.includes("service.upload"),
   "Workspace folder upload must create nested directories before uploading files.",
 );
 

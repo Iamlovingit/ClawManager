@@ -30,6 +30,9 @@ func TestInstanceExternalAccessShareLinkValidation(t *testing.T) {
 	if result.Access.AuthMode != ExternalAccessModeShareLink {
 		t.Fatalf("auth mode = %q, want %q", result.Access.AuthMode, ExternalAccessModeShareLink)
 	}
+	if result.Access.WorkspaceAccess != ExternalWorkspaceAccessNone {
+		t.Fatalf("default workspace access = %q, want none", result.Access.WorkspaceAccess)
+	}
 
 	access, err := service.ValidateShortLink(context.Background(), code, "")
 	if err != nil {
@@ -44,6 +47,29 @@ func TestInstanceExternalAccessShareLinkValidation(t *testing.T) {
 
 	if _, err := service.ValidateShortLink(context.Background(), "wrong-code", ""); err == nil {
 		t.Fatalf("expected wrong short code to fail")
+	}
+}
+
+func TestInstanceExternalAccessWorkspaceScope(t *testing.T) {
+	repo := newFakeExternalAccessRepo()
+	service := NewInstanceExternalAccessService(repo)
+
+	result, err := service.EnableShareLink(context.Background(), 42, 7, ExternalAccessExpirationRequest{
+		Mode:            ExternalAccessExpirationPermanent,
+		WorkspaceAccess: ExternalWorkspaceAccessWrite,
+	})
+	if err != nil {
+		t.Fatalf("EnableShareLink failed: %v", err)
+	}
+	if result.Access.WorkspaceAccess != ExternalWorkspaceAccessWrite {
+		t.Fatalf("workspace access = %q, want write", result.Access.WorkspaceAccess)
+	}
+
+	if _, err := service.CreatePassword(context.Background(), 42, 7, ExternalAccessExpirationRequest{
+		Mode:            ExternalAccessExpirationPermanent,
+		WorkspaceAccess: "administrator",
+	}); err == nil {
+		t.Fatal("unsupported workspace access must fail")
 	}
 }
 

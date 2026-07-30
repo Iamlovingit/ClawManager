@@ -36,6 +36,42 @@ func TestInstanceAccessServiceValidatesTokenAcrossServiceInstances(t *testing.T)
 	}
 }
 
+func TestInstanceAccessServicePreservesOptionalSessionBinding(t *testing.T) {
+	issuer := NewInstanceAccessService()
+	validator := NewInstanceAccessService()
+	defer issuer.Stop()
+	defer validator.Stop()
+
+	token, err := issuer.GenerateBoundToken(
+		7,
+		42,
+		"openclaw",
+		"/api/v1/instances/42/proxy/",
+		"",
+		3001,
+		5*time.Minute,
+		"share-code-binding",
+	)
+	if err != nil {
+		t.Fatalf("GenerateBoundToken() error = %v", err)
+	}
+	validated, err := validator.ValidateToken(token.Token)
+	if err != nil {
+		t.Fatalf("ValidateToken() error = %v", err)
+	}
+	if validated.SessionBinding != "share-code-binding" {
+		t.Fatalf("session binding = %q, want share-code-binding", validated.SessionBinding)
+	}
+
+	ordinary, err := issuer.GenerateToken(7, 42, "openclaw", "/api/v1/instances/42/proxy/", "", 3001, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("GenerateToken() error = %v", err)
+	}
+	if ordinary.SessionBinding != "" {
+		t.Fatalf("ordinary instance token binding = %q, want empty", ordinary.SessionBinding)
+	}
+}
+
 func TestInstanceAccessServiceRejectsExpiredSignedToken(t *testing.T) {
 	t.Setenv("INSTANCE_ACCESS_TOKEN_SECRET", "cluster-shared-secret")
 

@@ -335,6 +335,8 @@ const InstanceDetailPage: React.FC = () => {
   const [externalExpiresPreset, setExternalExpiresPreset] =
     useState<ExternalAccessExpirationPreset>("24h");
   const [externalCustomExpiresAt, setExternalCustomExpiresAt] = useState("");
+  const [externalWorkspaceAccess, setExternalWorkspaceAccess] =
+    useState<"none" | "read" | "write">("write");
   const [runtimeDetails, setRuntimeDetails] = useState<InstanceRuntimeDetails | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [desktopStreamProfile, setDesktopStreamProfile] =
@@ -389,6 +391,9 @@ const InstanceDetailPage: React.FC = () => {
       setExternalAccess(access);
       setExternalShareURL(access?.enabled ? absoluteExternalURL(result.share_url) : "");
       setExternalPassword(access?.enabled && access.auth_mode === "password" ? result.password ?? "" : "");
+      setExternalWorkspaceAccess(
+        access?.enabled ? access.workspace_access ?? "none" : "write",
+      );
       setExternalPasswordVisible(false);
       setExternalError(null);
     } catch (err: unknown) {
@@ -745,7 +750,10 @@ const InstanceDetailPage: React.FC = () => {
 
   const buildExternalAccessRequest = (): ExternalAccessRequest | null => {
     if (externalExpiresMode === "permanent") {
-      return { expires_mode: "permanent" };
+      return {
+        expires_mode: "permanent",
+        workspace_access: externalWorkspaceAccess,
+      };
     }
     if (externalExpiresMode === "custom") {
       if (!externalCustomExpiresAt) {
@@ -755,11 +763,13 @@ const InstanceDetailPage: React.FC = () => {
       return {
         expires_mode: "custom",
         expires_at: new Date(externalCustomExpiresAt).toISOString(),
+        workspace_access: externalWorkspaceAccess,
       };
     }
     return {
       expires_mode: "preset",
       expires_preset: externalExpiresPreset,
+      workspace_access: externalWorkspaceAccess,
     };
   };
 
@@ -1131,6 +1141,29 @@ const InstanceDetailPage: React.FC = () => {
                 />
               )}
             </div>
+            <label className="grid gap-1.5">
+              <span className="text-xs font-semibold uppercase text-slate-500">
+                Shared workspace
+              </span>
+              <select
+                value={externalWorkspaceAccess}
+                onChange={(event) =>
+                  setExternalWorkspaceAccess(
+                    event.target.value as "none" | "read" | "write",
+                  )
+                }
+                className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-sm outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                disabled={externalActionLoading !== null}
+                aria-label="Shared workspace access"
+              >
+                <option value="write">Full file access</option>
+                <option value="read">View and download</option>
+                <option value="none">Do not share files</option>
+              </select>
+              <span className="text-xs text-slate-500">
+                Existing links keep their current scope until you create a replacement link.
+              </span>
+            </label>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"

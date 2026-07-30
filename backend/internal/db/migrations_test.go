@@ -200,3 +200,20 @@ func TestMigration041AddsSessionUsageIndexes(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration042AddsImmutableReviewContractTarget(t *testing.T) {
+	raw, err := embeddedMigrations.ReadFile("migrations/042_add_team_review_contract.sql")
+	if err != nil {
+		t.Fatalf("read migration 042: %v", err)
+	}
+	sql := string(raw)
+	for _, required := range []string{
+		"review_target_assignment_id",
+		"review_target_revision",
+		"idx_team_work_items_review_target",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration 042 must contain %s", required)
+		}
+	}
+}

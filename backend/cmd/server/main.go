@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -178,7 +178,24 @@ func main() {
 	aiObservabilityHandler := handlers.NewAIObservabilityHandler(aiObservabilityService)
 	riskRuleHandler := handlers.NewRiskRuleHandler(riskRuleService)
 	clusterResourceHandler := handlers.NewClusterResourceHandler(clusterResourceService)
-	egressProxyHandler := handlers.NewEgressProxyHandler(auditEventService)
+	teamPreviewSecretService := k8s.NewSecretService()
+	teamPreviewOrigin, _ := services.DefaultTeamPreviewOrigin()
+	egressProxyHandler := handlers.NewEgressProxyHandler(
+		auditEventService,
+		handlers.WithTeamArtifactPreview(
+			teamRepo,
+			teamPreviewSecretService,
+			cfg.Runtime.WorkspaceRoot,
+			func(userID int) string {
+				client := k8s.GetClient()
+				if client == nil {
+					return ""
+				}
+				return client.GetNamespace(userID)
+			},
+		),
+		handlers.WithTeamArtifactPreviewOrigin(teamPreviewOrigin),
+	)
 	openClawConfigHandler := handlers.NewOpenClawConfigHandler(openClawConfigService)
 	skillHandler := handlers.NewSkillHandler(skillService, instanceService)
 	skillHubHandler := handlers.NewSkillHubHandler(skillService, instanceService)
@@ -187,6 +204,7 @@ func main() {
 	teamHandler := handlers.NewTeamHandler(teamService)
 	workspaceFileHandler := handlers.NewWorkspaceFileHandler(instanceService, workspaceFileService, runtimeWorkspaceFileService)
 	workspaceFileHandler.SetSkillRepository(skillRepo)
+	workspaceFileHandler.SetExternalAccessServices(externalAccessService, instanceHandler.InstanceAccessService())
 	runtimeAgentHandler := handlers.NewRuntimeAgentHandler(cfg.Runtime, runtimePodRepo, bindingRepo, instanceRepo, runtimeEvents, skillService)
 
 	// Initialize WebSocket hub and handler
@@ -310,6 +328,18 @@ func main() {
 
 	api := r.Group("/api/v1")
 	{
+		sharedInstances := api.Group("/shared-instances")
+		{
+			sharedInstances.GET("/:code/session", instanceHandler.GetSharedInstanceSession)
+			sharedInstances.GET("/:code/workspace/files", workspaceFileHandler.SharedList)
+			sharedInstances.GET("/:code/workspace/preview", workspaceFileHandler.SharedPreview)
+			sharedInstances.GET("/:code/workspace/download", workspaceFileHandler.SharedDownload)
+			sharedInstances.POST("/:code/workspace/upload", workspaceFileHandler.SharedUpload)
+			sharedInstances.POST("/:code/workspace/folders", workspaceFileHandler.SharedMkdir)
+			sharedInstances.PATCH("/:code/workspace/entries", workspaceFileHandler.SharedRename)
+			sharedInstances.DELETE("/:code/workspace/entries", workspaceFileHandler.SharedDelete)
+		}
+
 		runtimeAgent := api.Group("/runtime-agent")
 		{
 			runtimeAgent.POST("/register", runtimeAgentHandler.Register)

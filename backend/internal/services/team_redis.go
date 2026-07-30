@@ -129,6 +129,21 @@ func (b *redisBus) Set(ctx context.Context, key, value string, ttl time.Duration
 	return err
 }
 
+func (b *redisBus) Get(ctx context.Context, key string) (string, bool, error) {
+	reply, err := b.do(ctx, "GET", key)
+	if err != nil {
+		return "", false, err
+	}
+	if reply == nil {
+		return "", false, nil
+	}
+	value, ok := reply.(string)
+	if !ok {
+		return "", false, fmt.Errorf("unexpected redis GET response")
+	}
+	return value, true, nil
+}
+
 func (b *redisBus) Del(ctx context.Context, key string) error {
 	_, err := b.do(ctx, "DEL", key)
 	return err

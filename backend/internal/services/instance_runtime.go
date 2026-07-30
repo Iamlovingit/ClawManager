@@ -206,6 +206,22 @@ func defaultEgressProxyURL() (string, bool) {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%s", serviceName, systemNamespace, port), true
 }
 
+func defaultTeamPreviewOrigin() (string, bool) {
+	if override := strings.TrimSpace(os.Getenv("CLAWMANAGER_TEAM_PREVIEW_ORIGIN")); override != "" {
+		return strings.TrimRight(override, "/"), true
+	}
+	// Reuse the already-deployed managed proxy Service as the signed preview
+	// endpoint. This keeps preview links resolvable without requiring a second
+	// Service to be applied during an image-only rolling upgrade.
+	return defaultEgressProxyURL()
+}
+
+// DefaultTeamPreviewOrigin returns the internal, resolvable service origin used
+// by Team Browser previews.
+func DefaultTeamPreviewOrigin() (string, bool) {
+	return defaultTeamPreviewOrigin()
+}
+
 func defaultGatewayBaseURL() (string, bool) {
 	if override := strings.TrimSpace(os.Getenv("CLAWMANAGER_LLM_GATEWAY_BASE_URL")); override != "" {
 		return override, true

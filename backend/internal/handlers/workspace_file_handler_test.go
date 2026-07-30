@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -62,11 +63,12 @@ func (s *fakeWorkspaceHandlerInstanceService) GetInstanceStatus(instanceID int) 
 func (s *fakeWorkspaceHandlerInstanceService) ForceSyncInstance(instanceID int) error { return nil }
 
 type fakeWorkspaceFileService struct {
-	lastScope services.WorkspaceFileScope
-	listCalls int
-	file      *os.File
-	filename  string
-	size      int64
+	lastScope   services.WorkspaceFileScope
+	listCalls   int
+	deleteCalls int
+	file        *os.File
+	filename    string
+	size        int64
 }
 
 func (s *fakeWorkspaceFileService) List(ctx context.Context, scope services.WorkspaceFileScope, relativePath string) ([]services.WorkspaceEntry, error) {
@@ -100,7 +102,38 @@ func (s *fakeWorkspaceFileService) Rename(ctx context.Context, scope services.Wo
 }
 func (s *fakeWorkspaceFileService) Delete(ctx context.Context, scope services.WorkspaceFileScope, relativePath string) error {
 	s.lastScope = scope
+	s.deleteCalls++
 	return nil
+}
+
+type fakeSharedExternalAccessService struct {
+	access *models.InstanceExternalAccess
+	err    error
+}
+
+func (s *fakeSharedExternalAccessService) Get(ctx context.Context, instanceID int) (*models.InstanceExternalAccess, error) {
+	return s.access, s.err
+}
+func (s *fakeSharedExternalAccessService) EnableShareLink(ctx context.Context, instanceID, createdBy int, expiration services.ExternalAccessExpirationRequest) (*services.EnableShareLinkResult, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (s *fakeSharedExternalAccessService) CreatePassword(ctx context.Context, instanceID, createdBy int, expiration services.ExternalAccessExpirationRequest) (*services.PasswordExternalAccessResult, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (s *fakeSharedExternalAccessService) Disable(ctx context.Context, instanceID int) error {
+	return fmt.Errorf("not implemented")
+}
+func (s *fakeSharedExternalAccessService) ResolveShortLink(ctx context.Context, code string) (*models.InstanceExternalAccess, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if code != "sl_test" {
+		return nil, fmt.Errorf("external access is not enabled")
+	}
+	return s.access, nil
+}
+func (s *fakeSharedExternalAccessService) ValidateShortLink(ctx context.Context, code, password string) (*models.InstanceExternalAccess, error) {
+	return s.ResolveShortLink(ctx, code)
 }
 
 func TestWorkspaceFileHandlerRejectsNonOwnerUser(t *testing.T) {
@@ -242,6 +275,135 @@ func TestWorkspaceFileHandlerDownloadUsesSafeContentDisposition(t *testing.T) {
 	disposition := rec.Header().Get("Content-Disposition")
 	if !strings.Contains(disposition, "attachment;") || strings.Contains(disposition, `"name/`) || strings.Contains(disposition, "\r") || strings.Contains(disposition, "\n") {
 		t.Fatalf("Content-Disposition = %q, want safe attachment filename", disposition)
+	}
+}
+
+func TestSharedWorkspaceFileHandlerUsesCodeBoundInstanceScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	workspacePath := t.TempDir()
+	instanceService := &fakeWorkspaceHandlerInstanceService{instances: map[int]*models.Instance{
+		77: {ID: 77, UserID: 20, WorkspacePath: &workspacePath},
+	}}
+	fileService := &fakeWorkspaceFileService{}
+	accessTokens := services.NewInstanceAccessService()
+	defer accessTokens.Stop()
+	token, err := accessTokens.GenerateBoundToken(20, 77, "openclaw", "/api/v1/instances/77/proxy/", "", 3001, time.Hour, sharedExternalAccessSessionBinding("sl_test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWorkspaceFileHandler(instanceService, fileService)
+	handler.SetExternalAccessServices(&fakeSharedExternalAccessService{access: &models.InstanceExternalAccess{
+		InstanceID:      77,
+		Enabled:         true,
+		AuthMode:        services.ExternalAccessModeShareLink,
+		WorkspaceAccess: services.ExternalWorkspaceAccessRead,
+	}}, accessTokens)
+
+	router := gin.New()
+	router.GET("/api/v1/shared-instances/:code/workspace/files", handler.SharedList)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shared-instances/sl_test/workspace/files", nil)
+	req.AddCookie(&http.Cookie{Name: shortExternalAccessCookieName("sl_test"), Value: token.Token})
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	if fileService.lastScope.InstanceID != 77 ||
+		fileService.lastScope.UserID != 20 ||
+		fileService.lastScope.WorkspacePath != workspacePath ||
+		fileService.lastScope.AuditActionPrefix != "share_" {
+		t.Fatalf("scope = %#v, want shared instance owner scope", fileService.lastScope)
+	}
+}
+
+func TestSharedWorkspaceFileHandlerEnforcesReadOnlyAndCSRF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	workspacePath := t.TempDir()
+	instanceService := &fakeWorkspaceHandlerInstanceService{instances: map[int]*models.Instance{
+		77: {ID: 77, UserID: 20, WorkspacePath: &workspacePath},
+	}}
+	fileService := &fakeWorkspaceFileService{}
+	accessTokens := services.NewInstanceAccessService()
+	defer accessTokens.Stop()
+	token, err := accessTokens.GenerateBoundToken(20, 77, "openclaw", "/api/v1/instances/77/proxy/", "", 3001, time.Hour, sharedExternalAccessSessionBinding("sl_test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalAccess := &models.InstanceExternalAccess{
+		InstanceID:      77,
+		Enabled:         true,
+		AuthMode:        services.ExternalAccessModeShareLink,
+		WorkspaceAccess: services.ExternalWorkspaceAccessRead,
+	}
+	handler := NewWorkspaceFileHandler(instanceService, fileService)
+	handler.SetExternalAccessServices(&fakeSharedExternalAccessService{access: externalAccess}, accessTokens)
+	router := gin.New()
+	router.DELETE("/api/v1/shared-instances/:code/workspace/entries", handler.SharedDelete)
+
+	requestDelete := func(csrf string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/shared-instances/sl_test/workspace/entries?path=report.md", nil)
+		req.AddCookie(&http.Cookie{Name: shortExternalAccessCookieName("sl_test"), Value: token.Token})
+		if csrf != "" {
+			req.Header.Set(sharedWorkspaceCSRFHeader, csrf)
+		}
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := requestDelete(sharedExternalAccessCSRFToken("sl_test", token.Token)); rec.Code != http.StatusForbidden {
+		t.Fatalf("read-only delete status = %d, body = %s, want 403", rec.Code, rec.Body.String())
+	}
+	if fileService.deleteCalls != 0 {
+		t.Fatalf("read-only delete reached file service %d times", fileService.deleteCalls)
+	}
+
+	externalAccess.WorkspaceAccess = services.ExternalWorkspaceAccessWrite
+	if rec := requestDelete(""); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF delete status = %d, body = %s, want 403", rec.Code, rec.Body.String())
+	}
+	if rec := requestDelete(sharedExternalAccessCSRFToken("sl_test", token.Token)); rec.Code != http.StatusOK {
+		t.Fatalf("valid write delete status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	if fileService.deleteCalls != 1 {
+		t.Fatalf("valid delete reached file service %d times, want 1", fileService.deleteCalls)
+	}
+}
+
+func TestSharedWorkspaceFileHandlerDoesNotExposeLegacyNoneScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	workspacePath := t.TempDir()
+	instanceService := &fakeWorkspaceHandlerInstanceService{instances: map[int]*models.Instance{
+		77: {ID: 77, UserID: 20, WorkspacePath: &workspacePath},
+	}}
+	fileService := &fakeWorkspaceFileService{}
+	accessTokens := services.NewInstanceAccessService()
+	defer accessTokens.Stop()
+	token, err := accessTokens.GenerateBoundToken(20, 77, "openclaw", "/api/v1/instances/77/proxy/", "", 3001, time.Hour, sharedExternalAccessSessionBinding("sl_test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWorkspaceFileHandler(instanceService, fileService)
+	handler.SetExternalAccessServices(&fakeSharedExternalAccessService{access: &models.InstanceExternalAccess{
+		InstanceID:      77,
+		Enabled:         true,
+		AuthMode:        services.ExternalAccessModeShareLink,
+		WorkspaceAccess: services.ExternalWorkspaceAccessNone,
+	}}, accessTokens)
+	router := gin.New()
+	router.GET("/api/v1/shared-instances/:code/workspace/files", handler.SharedList)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shared-instances/sl_test/workspace/files", nil)
+	req.AddCookie(&http.Cookie{Name: shortExternalAccessCookieName("sl_test"), Value: token.Token})
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("legacy none scope status = %d, body = %s, want 403", rec.Code, rec.Body.String())
+	}
+	if fileService.listCalls != 0 {
+		t.Fatalf("legacy none scope reached file service %d times", fileService.listCalls)
 	}
 }
 

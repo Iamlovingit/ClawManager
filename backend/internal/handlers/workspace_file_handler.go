@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -25,8 +26,15 @@ type WorkspaceFileHandler struct {
 	instanceService             services.InstanceService
 	fileService                 services.WorkspaceFileService
 	runtimeWorkspaceFileService services.WorkspaceFileService
+	externalAccessService       services.InstanceExternalAccessService
+	instanceAccessService       *services.InstanceAccessService
 	skillRepo                   repository.SkillRepository
 }
+
+const (
+	sharedWorkspaceContextKey = "shared-instance-workspace"
+	sharedWorkspaceCSRFHeader = "X-ClawManager-Share-CSRF"
+)
 
 type createWorkspaceFolderRequest struct {
 	Path string `json:"path" binding:"required"`
@@ -51,6 +59,53 @@ func NewWorkspaceFileHandler(instanceService services.InstanceService, fileServi
 
 func (h *WorkspaceFileHandler) SetSkillRepository(skillRepo repository.SkillRepository) {
 	h.skillRepo = skillRepo
+}
+
+func (h *WorkspaceFileHandler) SetExternalAccessServices(externalAccessService services.InstanceExternalAccessService, instanceAccessService *services.InstanceAccessService) {
+	h.externalAccessService = externalAccessService
+	h.instanceAccessService = instanceAccessService
+}
+
+func (h *WorkspaceFileHandler) SharedList(c *gin.Context) {
+	h.markSharedRequest(c)
+	h.List(c)
+}
+
+func (h *WorkspaceFileHandler) SharedPreview(c *gin.Context) {
+	h.markSharedRequest(c)
+	h.Preview(c)
+}
+
+func (h *WorkspaceFileHandler) SharedDownload(c *gin.Context) {
+	h.markSharedRequest(c)
+	h.Download(c)
+}
+
+func (h *WorkspaceFileHandler) SharedUpload(c *gin.Context) {
+	h.markSharedRequest(c)
+	h.Upload(c)
+}
+
+func (h *WorkspaceFileHandler) SharedMkdir(c *gin.Context) {
+	h.markSharedRequest(c)
+	h.Mkdir(c)
+}
+
+func (h *WorkspaceFileHandler) SharedRename(c *gin.Context) {
+	h.markSharedRequest(c)
+	h.Rename(c)
+}
+
+func (h *WorkspaceFileHandler) SharedDelete(c *gin.Context) {
+	h.markSharedRequest(c)
+	h.Delete(c)
+}
+
+func (h *WorkspaceFileHandler) markSharedRequest(c *gin.Context) {
+	c.Set(sharedWorkspaceContextKey, true)
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
 }
 
 func (h *WorkspaceFileHandler) List(c *gin.Context) {
@@ -209,6 +264,10 @@ func (h *WorkspaceFileHandler) syncSkillDeletionFromWorkspacePath(instanceID int
 }
 
 func (h *WorkspaceFileHandler) workspaceScope(c *gin.Context) (*models.Instance, services.WorkspaceFileService, services.WorkspaceFileScope, bool) {
+	if shared, _ := c.Get(sharedWorkspaceContextKey); shared == true {
+		return h.sharedWorkspaceScope(c)
+	}
+
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		utils.Error(c, http.StatusBadRequest, "Invalid instance ID")
@@ -241,11 +300,80 @@ func (h *WorkspaceFileHandler) workspaceScope(c *gin.Context) (*models.Instance,
 		utils.Error(c, http.StatusForbidden, "Access denied")
 		return nil, nil, services.WorkspaceFileScope{}, false
 	}
+	return h.instanceWorkspaceScope(c, instance, "")
+}
+
+func (h *WorkspaceFileHandler) sharedWorkspaceScope(c *gin.Context) (*models.Instance, services.WorkspaceFileService, services.WorkspaceFileScope, bool) {
+	if h.externalAccessService == nil || h.instanceAccessService == nil {
+		utils.Error(c, http.StatusServiceUnavailable, "Shared workspace access is not configured")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	code := strings.TrimSpace(c.Param("code"))
+	access, err := h.externalAccessService.ResolveShortLink(c.Request.Context(), code)
+	if err != nil {
+		utils.Error(c, http.StatusUnauthorized, err.Error())
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	if access.AuthMode != services.ExternalAccessModeShareLink &&
+		access.AuthMode != services.ExternalAccessModePassword {
+		utils.Error(c, http.StatusBadRequest, "Unsupported share link mode")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	workspaceAccess, err := services.NormalizeExternalWorkspaceAccess(access.WorkspaceAccess)
+	if err != nil || workspaceAccess == services.ExternalWorkspaceAccessNone {
+		utils.Error(c, http.StatusForbidden, "Workspace access is not enabled for this share link")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	isWrite := c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead
+	if isWrite && workspaceAccess != services.ExternalWorkspaceAccessWrite {
+		utils.Error(c, http.StatusForbidden, "This share link has read-only workspace access")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+
+	token, cookieErr := c.Cookie(shortExternalAccessCookieName(code))
+	if cookieErr != nil || strings.TrimSpace(token) == "" {
+		utils.Error(c, http.StatusUnauthorized, "Open the share link before accessing workspace files")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	accessToken, tokenErr := h.instanceAccessService.ValidateToken(token)
+	if tokenErr != nil ||
+		accessToken.InstanceID != access.InstanceID ||
+		accessToken.SessionBinding != sharedExternalAccessSessionBinding(code) {
+		utils.Error(c, http.StatusUnauthorized, "Share session expired or invalid")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	if isWrite {
+		expected := sharedExternalAccessCSRFToken(code, token)
+		actual := strings.TrimSpace(c.GetHeader(sharedWorkspaceCSRFHeader))
+		if expected == "" || subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) != 1 {
+			utils.Error(c, http.StatusForbidden, "Invalid share request")
+			return nil, nil, services.WorkspaceFileScope{}, false
+		}
+	}
+
+	instance, err := h.instanceService.GetByID(access.InstanceID)
+	if err != nil {
+		utils.HandleError(c, err)
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	if instance == nil {
+		utils.Error(c, http.StatusNotFound, "Instance not found")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	if accessToken.UserID != instance.UserID {
+		utils.Error(c, http.StatusUnauthorized, "Share session does not match instance owner")
+		return nil, nil, services.WorkspaceFileScope{}, false
+	}
+	return h.instanceWorkspaceScope(c, instance, "share_")
+}
+
+func (h *WorkspaceFileHandler) instanceWorkspaceScope(c *gin.Context, instance *models.Instance, auditActionPrefix string) (*models.Instance, services.WorkspaceFileService, services.WorkspaceFileScope, bool) {
 	if isDesktopWorkspaceInstance(instance) {
 		return instance, h.runtimeWorkspaceFileService, services.WorkspaceFileScope{
-			InstanceID:    instance.ID,
-			UserID:        instance.UserID,
-			WorkspacePath: "/config",
+			InstanceID:        instance.ID,
+			UserID:            instance.UserID,
+			WorkspacePath:     "/config",
+			AuditActionPrefix: auditActionPrefix,
 		}, true
 	}
 	if instance.WorkspacePath == nil || strings.TrimSpace(*instance.WorkspacePath) == "" {
@@ -254,9 +382,10 @@ func (h *WorkspaceFileHandler) workspaceScope(c *gin.Context) (*models.Instance,
 	}
 
 	return instance, h.fileService, services.WorkspaceFileScope{
-		InstanceID:    instance.ID,
-		UserID:        instance.UserID,
-		WorkspacePath: *instance.WorkspacePath,
+		InstanceID:        instance.ID,
+		UserID:            instance.UserID,
+		WorkspacePath:     *instance.WorkspacePath,
+		AuditActionPrefix: auditActionPrefix,
 	}, true
 }
 

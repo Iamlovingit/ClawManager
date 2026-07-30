@@ -133,28 +133,30 @@ func (TeamEvent) TableName() string {
 }
 
 type TeamWorkItem struct {
-	ID                int        `db:"id,primarykey,autoincrement" json:"id"`
-	TeamID            int        `db:"team_id" json:"team_id"`
-	RootTaskID        int        `db:"root_task_id" json:"root_task_id"`
-	WorkID            string     `db:"work_id" json:"work_id"`
-	AssignmentID      *string    `db:"assignment_id" json:"assignment_id,omitempty"`
-	CanonicalWorkID   *string    `db:"canonical_work_id" json:"canonical_work_id,omitempty"`
-	PhaseID           *string    `db:"phase_id" json:"phase_id,omitempty"`
-	Revision          int        `db:"revision" json:"revision"`
-	RequiredForRoot   bool       `db:"required_for_root" json:"required_for_root"`
-	SupersededBy      *string    `db:"superseded_by" json:"superseded_by,omitempty"`
-	ReviewRequired    bool       `db:"review_required" json:"review_required"`
-	ValidatedRevision *int       `db:"validated_revision" json:"validated_revision,omitempty"`
-	OwnerMemberID     *int       `db:"owner_member_id" json:"owner_member_id,omitempty"`
-	Title             string     `db:"title" json:"title"`
-	Status            string     `db:"status" json:"status"`
-	DependsOnJSON     *string    `db:"depends_on_json" json:"-"`
-	ResultJSON        *string    `db:"result_json" json:"-"`
-	ArtifactRefsJSON  *string    `db:"artifact_refs_json" json:"-"`
-	CreatedAt         time.Time  `db:"created_at" json:"created_at"`
-	StartedAt         *time.Time `db:"started_at" json:"started_at,omitempty"`
-	FinishedAt        *time.Time `db:"finished_at" json:"finished_at,omitempty"`
-	UpdatedAt         time.Time  `db:"updated_at" json:"updated_at"`
+	ID                       int        `db:"id,primarykey,autoincrement" json:"id"`
+	TeamID                   int        `db:"team_id" json:"team_id"`
+	RootTaskID               int        `db:"root_task_id" json:"root_task_id"`
+	WorkID                   string     `db:"work_id" json:"work_id"`
+	AssignmentID             *string    `db:"assignment_id" json:"assignment_id,omitempty"`
+	CanonicalWorkID          *string    `db:"canonical_work_id" json:"canonical_work_id,omitempty"`
+	PhaseID                  *string    `db:"phase_id" json:"phase_id,omitempty"`
+	Revision                 int        `db:"revision" json:"revision"`
+	RequiredForRoot          bool       `db:"required_for_root" json:"required_for_root"`
+	SupersededBy             *string    `db:"superseded_by" json:"superseded_by,omitempty"`
+	ReviewRequired           bool       `db:"review_required" json:"review_required"`
+	ValidatedRevision        *int       `db:"validated_revision" json:"validated_revision,omitempty"`
+	ReviewTargetAssignmentID *string    `db:"review_target_assignment_id" json:"review_target_assignment_id,omitempty"`
+	ReviewTargetRevision     *int       `db:"review_target_revision" json:"review_target_revision,omitempty"`
+	OwnerMemberID            *int       `db:"owner_member_id" json:"owner_member_id,omitempty"`
+	Title                    string     `db:"title" json:"title"`
+	Status                   string     `db:"status" json:"status"`
+	DependsOnJSON            *string    `db:"depends_on_json" json:"-"`
+	ResultJSON               *string    `db:"result_json" json:"-"`
+	ArtifactRefsJSON         *string    `db:"artifact_refs_json" json:"-"`
+	CreatedAt                time.Time  `db:"created_at" json:"created_at"`
+	StartedAt                *time.Time `db:"started_at" json:"started_at,omitempty"`
+	FinishedAt               *time.Time `db:"finished_at" json:"finished_at,omitempty"`
+	UpdatedAt                time.Time  `db:"updated_at" json:"updated_at"`
 }
 
 type TeamWorkflowPhase struct {

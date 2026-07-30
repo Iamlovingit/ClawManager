@@ -53,5 +53,13 @@ assert(
   !typeSource.includes("public_slug:") && !typeSource.includes("token?:"),
   "Frontend external access types must not expose legacy long-link slug or token fields.",
 );
+assert(
+  detailSource.includes("Shared workspace") &&
+    detailSource.includes("Full file access") &&
+    detailSource.includes("View and download") &&
+    detailSource.includes("Do not share files") &&
+    typeSource.includes('workspace_access: "none" | "read" | "write"'),
+  "Share Link must expose an explicit single-instance workspace scope.",
+);
 
 console.log("Instance external access short-link UI contract is valid.");

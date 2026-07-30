@@ -38,9 +38,10 @@ var (
 )
 
 type WorkspaceFileScope struct {
-	InstanceID    int
-	UserID        int
-	WorkspacePath string
+	InstanceID        int
+	UserID            int
+	WorkspacePath     string
+	AuditActionPrefix string
 }
 
 type WorkspaceEntry struct {
@@ -450,6 +451,7 @@ func (s *workspaceFileService) recordAudit(ctx context.Context, scope WorkspaceF
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	action = strings.TrimSpace(scope.AuditActionPrefix) + action
 	return s.auditRepo.Create(ctx, &models.WorkspaceFileAudit{
 		InstanceID:   scope.InstanceID,
 		UserID:       scope.UserID,

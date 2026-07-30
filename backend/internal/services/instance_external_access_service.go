@@ -17,6 +17,10 @@ const (
 	ExternalAccessModeShareLink = "share_link"
 	ExternalAccessModePassword  = "password"
 
+	ExternalWorkspaceAccessNone  = "none"
+	ExternalWorkspaceAccessRead  = "read"
+	ExternalWorkspaceAccessWrite = "write"
+
 	ExternalAccessExpirationPreset    = "preset"
 	ExternalAccessExpirationCustom    = "custom"
 	ExternalAccessExpirationPermanent = "permanent"
@@ -28,9 +32,10 @@ const (
 )
 
 type ExternalAccessExpirationRequest struct {
-	Mode      string     `json:"expires_mode,omitempty"`
-	Preset    string     `json:"expires_preset,omitempty"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Mode            string     `json:"expires_mode,omitempty"`
+	Preset          string     `json:"expires_preset,omitempty"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	WorkspaceAccess string     `json:"workspace_access,omitempty"`
 }
 
 type EnableShareLinkResult struct {
@@ -80,10 +85,15 @@ func (s *instanceExternalAccessService) EnableShareLink(ctx context.Context, ins
 	if err != nil {
 		return nil, err
 	}
+	workspaceAccess, err := NormalizeExternalWorkspaceAccess(expiration.WorkspaceAccess)
+	if err != nil {
+		return nil, err
+	}
 	access := &models.InstanceExternalAccess{
 		InstanceID:      instanceID,
 		Enabled:         true,
 		AuthMode:        ExternalAccessModeShareLink,
+		WorkspaceAccess: workspaceAccess,
 		ShortCodeHash:   &codeHash,
 		PublicSlug:      &code,
 		PublicTokenHash: nil,
@@ -123,6 +133,10 @@ func (s *instanceExternalAccessService) CreatePassword(ctx context.Context, inst
 	if err != nil {
 		return nil, err
 	}
+	workspaceAccess, err := NormalizeExternalWorkspaceAccess(expiration.WorkspaceAccess)
+	if err != nil {
+		return nil, err
+	}
 	passwordHash := hashExternalSecret(password)
 	hint := password
 	if len(hint) > 12 {
@@ -132,6 +146,7 @@ func (s *instanceExternalAccessService) CreatePassword(ctx context.Context, inst
 		InstanceID:      instanceID,
 		Enabled:         true,
 		AuthMode:        ExternalAccessModePassword,
+		WorkspaceAccess: workspaceAccess,
 		PublicSlug:      &code,
 		ShortCodeHash:   &codeHash,
 		PasswordHash:    &passwordHash,
@@ -150,6 +165,19 @@ func (s *instanceExternalAccessService) CreatePassword(ctx context.Context, inst
 		return nil, err
 	}
 	return &PasswordExternalAccessResult{Access: saved, Password: password, ShareURL: shortExternalAccessURL(code)}, nil
+}
+
+func NormalizeExternalWorkspaceAccess(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", ExternalWorkspaceAccessNone:
+		return ExternalWorkspaceAccessNone, nil
+	case ExternalWorkspaceAccessRead:
+		return ExternalWorkspaceAccessRead, nil
+	case ExternalWorkspaceAccessWrite:
+		return ExternalWorkspaceAccessWrite, nil
+	default:
+		return "", fmt.Errorf("unsupported external workspace access")
+	}
 }
 
 func (s *instanceExternalAccessService) Disable(ctx context.Context, instanceID int) error {

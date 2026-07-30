@@ -13,15 +13,16 @@ import (
 
 // AccessToken represents a temporary access token for instance
 type AccessToken struct {
-	Token        string    `json:"token"`
-	InstanceID   int       `json:"instance_id"`
-	UserID       int       `json:"user_id"`
-	InstanceType string    `json:"instance_type"`
-	TargetPort   int32     `json:"target_port"`
-	AccessURL    string    `json:"access_url"`
-	Upstream     string    `json:"upstream"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CreatedAt    time.Time `json:"created_at"`
+	Token          string    `json:"token"`
+	InstanceID     int       `json:"instance_id"`
+	UserID         int       `json:"user_id"`
+	InstanceType   string    `json:"instance_type"`
+	TargetPort     int32     `json:"target_port"`
+	AccessURL      string    `json:"access_url"`
+	Upstream       string    `json:"upstream"`
+	SessionBinding string    `json:"session_binding,omitempty"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // InstanceAccessService manages instance access tokens
@@ -33,13 +34,14 @@ type InstanceAccessService struct {
 }
 
 type instanceAccessClaims struct {
-	InstanceID   int    `json:"instance_id"`
-	UserID       int    `json:"user_id"`
-	InstanceType string `json:"instance_type"`
-	TargetPort   int32  `json:"target_port"`
-	AccessURL    string `json:"access_url"`
-	Upstream     string `json:"upstream"`
-	TokenType    string `json:"token_type"`
+	InstanceID     int    `json:"instance_id"`
+	UserID         int    `json:"user_id"`
+	InstanceType   string `json:"instance_type"`
+	TargetPort     int32  `json:"target_port"`
+	AccessURL      string `json:"access_url"`
+	Upstream       string `json:"upstream"`
+	SessionBinding string `json:"session_binding,omitempty"`
+	TokenType      string `json:"token_type"`
 	jwt.RegisteredClaims
 }
 
@@ -59,17 +61,26 @@ func NewInstanceAccessService() *InstanceAccessService {
 
 // GenerateToken generates a new access token for an instance
 func (s *InstanceAccessService) GenerateToken(userID, instanceID int, instanceType string, accessURL string, upstream string, targetPort int32, duration time.Duration) (*AccessToken, error) {
+	return s.generateToken(userID, instanceID, instanceType, accessURL, upstream, targetPort, duration, "")
+}
+
+func (s *InstanceAccessService) GenerateBoundToken(userID, instanceID int, instanceType string, accessURL string, upstream string, targetPort int32, duration time.Duration, sessionBinding string) (*AccessToken, error) {
+	return s.generateToken(userID, instanceID, instanceType, accessURL, upstream, targetPort, duration, strings.TrimSpace(sessionBinding))
+}
+
+func (s *InstanceAccessService) generateToken(userID, instanceID int, instanceType string, accessURL string, upstream string, targetPort int32, duration time.Duration, sessionBinding string) (*AccessToken, error) {
 	now := time.Now()
 	expiresAt := now.Add(duration)
 
 	claims := instanceAccessClaims{
-		InstanceID:   instanceID,
-		UserID:       userID,
-		InstanceType: instanceType,
-		TargetPort:   targetPort,
-		AccessURL:    accessURL,
-		Upstream:     upstream,
-		TokenType:    "instance_access",
+		InstanceID:     instanceID,
+		UserID:         userID,
+		InstanceType:   instanceType,
+		TargetPort:     targetPort,
+		AccessURL:      accessURL,
+		Upstream:       upstream,
+		SessionBinding: sessionBinding,
+		TokenType:      "instance_access",
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
@@ -83,15 +94,16 @@ func (s *InstanceAccessService) GenerateToken(userID, instanceID int, instanceTy
 	}
 
 	accessToken := &AccessToken{
-		Token:        tokenString,
-		InstanceID:   instanceID,
-		UserID:       userID,
-		InstanceType: instanceType,
-		TargetPort:   targetPort,
-		AccessURL:    accessURL,
-		Upstream:     upstream,
-		ExpiresAt:    expiresAt,
-		CreatedAt:    now,
+		Token:          tokenString,
+		InstanceID:     instanceID,
+		UserID:         userID,
+		InstanceType:   instanceType,
+		TargetPort:     targetPort,
+		AccessURL:      accessURL,
+		Upstream:       upstream,
+		SessionBinding: sessionBinding,
+		ExpiresAt:      expiresAt,
+		CreatedAt:      now,
 	}
 
 	return accessToken, nil
@@ -158,15 +170,16 @@ func (s *InstanceAccessService) validateSignedToken(token string) (*AccessToken,
 	}
 
 	return &AccessToken{
-		Token:        token,
-		InstanceID:   claims.InstanceID,
-		UserID:       claims.UserID,
-		InstanceType: claims.InstanceType,
-		TargetPort:   claims.TargetPort,
-		AccessURL:    claims.AccessURL,
-		Upstream:     claims.Upstream,
-		ExpiresAt:    expiresAt,
-		CreatedAt:    createdAt,
+		Token:          token,
+		InstanceID:     claims.InstanceID,
+		UserID:         claims.UserID,
+		InstanceType:   claims.InstanceType,
+		TargetPort:     claims.TargetPort,
+		AccessURL:      claims.AccessURL,
+		Upstream:       claims.Upstream,
+		SessionBinding: claims.SessionBinding,
+		ExpiresAt:      expiresAt,
+		CreatedAt:      createdAt,
 	}, nil
 }
 

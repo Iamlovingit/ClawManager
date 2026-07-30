@@ -53,6 +53,7 @@ import InstanceListPage from '../pages/instances/InstanceListPage';
 import CreateInstancePage from '../pages/instances/CreateInstancePage';
 import InstanceDetailPage from '../pages/instances/InstanceDetailPage';
 import InstancePortalPage from '../pages/instances/InstancePortalPage';
+import SharedInstancePage from '../pages/instances/SharedInstancePage';
 import TeamListPage from '../pages/teams/TeamListPage';
 import CreateTeamPage from '../pages/teams/CreateTeamPage';
 import TeamDetailPage from '../pages/teams/TeamDetailPage';
@@ -165,6 +166,7 @@ function AppRoutes() {
           </PublicRoute>
         }
       />
+      <Route path="/share/:code" element={<SharedInstancePage />} />
 
       {/* User Routes */}
       <Route

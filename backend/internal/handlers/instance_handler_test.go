@@ -458,12 +458,12 @@ func TestShortExternalAccessEntryRedirectTarget(t *testing.T) {
 		want          string
 	}{
 		{
-			name:          "html entry redirects to canonical proxy path",
+			name:          "html entry redirects to shared instance shell",
 			method:        http.MethodGet,
 			requestPath:   "/s/sl_abc123/",
 			code:          "sl_abc123",
 			canonicalPath: "/api/v1/instances/71/proxy/chat/",
-			want:          "/api/v1/instances/71/proxy/chat/",
+			want:          "/share/sl_abc123",
 		},
 		{
 			name:          "entry without trailing slash redirects",
@@ -471,7 +471,7 @@ func TestShortExternalAccessEntryRedirectTarget(t *testing.T) {
 			requestPath:   "/s/sl_abc123",
 			code:          "sl_abc123",
 			canonicalPath: "/api/v1/instances/71/proxy/chat/",
-			want:          "/api/v1/instances/71/proxy/chat/",
+			want:          "/share/sl_abc123",
 		},
 		{
 			name:          "asset path keeps short proxy handling",
@@ -490,12 +490,12 @@ func TestShortExternalAccessEntryRedirectTarget(t *testing.T) {
 			want:          "",
 		},
 		{
-			name:          "target strips accidental token query",
+			name:          "canonical proxy validation does not expose token query",
 			method:        http.MethodGet,
 			requestPath:   "/s/sl_abc123/",
 			code:          "sl_abc123",
 			canonicalPath: "/api/v1/instances/71/proxy/chat/?token=secret",
-			want:          "/api/v1/instances/71/proxy/chat/",
+			want:          "/share/sl_abc123",
 		},
 	}
 
@@ -532,6 +532,140 @@ func TestRenderShortLinkPasswordForm(t *testing.T) {
 	}
 	if contentType := recorder.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
 		t.Fatalf("content type = %q, want text/html", contentType)
+	}
+}
+
+func TestSharedInstanceSessionIssuesScopedRuntimeAndWorkspaceSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	workspacePath := t.TempDir()
+	instanceService := &fakeWorkspaceHandlerInstanceService{instances: map[int]*models.Instance{
+		77: {
+			ID:            77,
+			UserID:        20,
+			Name:          "shared-openclaw",
+			Type:          "openclaw",
+			Status:        "running",
+			RuntimeType:   services.RuntimeBackendGateway,
+			InstanceMode:  services.InstanceModeLite,
+			WorkspacePath: &workspacePath,
+		},
+	}}
+	accessTokens := services.NewInstanceAccessService()
+	defer accessTokens.Stop()
+	handler := &InstanceHandler{
+		instanceService: instanceService,
+		externalAccessService: &fakeSharedExternalAccessService{access: &models.InstanceExternalAccess{
+			InstanceID:      77,
+			Enabled:         true,
+			AuthMode:        services.ExternalAccessModeShareLink,
+			WorkspaceAccess: services.ExternalWorkspaceAccessWrite,
+		}},
+		accessService: accessTokens,
+		proxyService:  services.NewInstanceProxyService(accessTokens),
+	}
+	router := gin.New()
+	router.GET("/api/v1/shared-instances/:code/session", handler.GetSharedInstanceSession)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shared-instances/sl_test/session", nil)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	for _, value := range []string{
+		`"workspace_access":"write"`,
+		`"workspace_available":true`,
+		`"csrf_token":"`,
+		`"access_url":"`,
+	} {
+		if !strings.Contains(rec.Body.String(), value) {
+			t.Fatalf("session response missing %q: %s", value, rec.Body.String())
+		}
+	}
+	setCookies := rec.Header().Values("Set-Cookie")
+	joinedCookies := strings.Join(setCookies, "\n")
+	for _, path := range []string{
+		"Path=/api/v1/instances/77/proxy",
+		"Path=/api/v1/shared-instances/sl_test",
+		"Path=/s/sl_test",
+	} {
+		if !strings.Contains(joinedCookies, path) {
+			t.Fatalf("session cookies missing %q:\n%s", path, joinedCookies)
+		}
+	}
+}
+
+func TestSharedInstanceSessionRequiresPasswordEntrySession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	workspacePath := t.TempDir()
+	instanceService := &fakeWorkspaceHandlerInstanceService{instances: map[int]*models.Instance{
+		77: {
+			ID:            77,
+			UserID:        20,
+			Name:          "shared-openclaw",
+			Type:          "openclaw",
+			Status:        "running",
+			RuntimeType:   services.RuntimeBackendGateway,
+			InstanceMode:  services.InstanceModeLite,
+			WorkspacePath: &workspacePath,
+		},
+	}}
+	accessTokens := services.NewInstanceAccessService()
+	defer accessTokens.Stop()
+	handler := &InstanceHandler{
+		instanceService: instanceService,
+		externalAccessService: &fakeSharedExternalAccessService{access: &models.InstanceExternalAccess{
+			InstanceID:      77,
+			Enabled:         true,
+			AuthMode:        services.ExternalAccessModePassword,
+			WorkspaceAccess: services.ExternalWorkspaceAccessWrite,
+		}},
+		accessService: accessTokens,
+		proxyService:  services.NewInstanceProxyService(accessTokens),
+	}
+	router := gin.New()
+	router.GET("/api/v1/shared-instances/:code/session", handler.GetSharedInstanceSession)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shared-instances/sl_test/session", nil)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %s, want 401", rec.Code, rec.Body.String())
+	}
+
+	unboundToken, err := accessTokens.GenerateToken(20, 77, "openclaw", "/api/v1/instances/77/proxy/", "", 3001, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/shared-instances/sl_test/session", nil)
+	req.AddCookie(&http.Cookie{Name: shortExternalAccessCookieName("sl_test"), Value: unboundToken.Token})
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unbound instance token status = %d, body = %s, want 401", rec.Code, rec.Body.String())
+	}
+
+	boundToken, err := accessTokens.GenerateBoundToken(
+		20,
+		77,
+		"openclaw",
+		"/api/v1/instances/77/proxy/",
+		"",
+		3001,
+		time.Hour,
+		sharedExternalAccessSessionBinding("sl_test"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/shared-instances/sl_test/session", nil)
+	req.AddCookie(&http.Cookie{Name: shortExternalAccessCookieName("sl_test"), Value: boundToken.Token})
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bound password session status = %d, body = %s, want 200", rec.Code, rec.Body.String())
 	}
 }
 

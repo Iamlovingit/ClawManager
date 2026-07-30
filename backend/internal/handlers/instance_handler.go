@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html"
@@ -169,6 +171,13 @@ func (h *InstanceHandler) Shutdown() {
 	}
 }
 
+func (h *InstanceHandler) InstanceAccessService() *services.InstanceAccessService {
+	if h == nil {
+		return nil
+	}
+	return h.accessService
+}
+
 type InstanceRuntimeDetailsResponse struct {
 	Runtime       *services.InstanceRuntimeStatusPayload `json:"runtime,omitempty"`
 	Agent         *services.InstanceAgentPayload         `json:"agent,omitempty"`
@@ -185,9 +194,10 @@ type PublishConfigRevisionRequest struct {
 }
 
 type ExternalAccessRequest struct {
-	ExpiresMode   string     `json:"expires_mode,omitempty"`
-	ExpiresPreset string     `json:"expires_preset,omitempty"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	ExpiresMode     string     `json:"expires_mode,omitempty"`
+	ExpiresPreset   string     `json:"expires_preset,omitempty"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	WorkspaceAccess string     `json:"workspace_access,omitempty" binding:"omitempty,oneof=none read write"`
 }
 
 // CreateInstanceRequest represents a create instance request
@@ -2264,6 +2274,75 @@ func (h *InstanceHandler) OpenShortExternalAccess(c *gin.Context) {
 	h.proxyInstanceWithToken(c, instance.ID, token)
 }
 
+func (h *InstanceHandler) GetSharedInstanceSession(c *gin.Context) {
+	if h.externalAccessService == nil {
+		utils.Error(c, http.StatusServiceUnavailable, "External access is not configured")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+
+	code := strings.TrimSpace(c.Param("code"))
+	access, err := h.externalAccessService.ResolveShortLink(c.Request.Context(), code)
+	if err != nil {
+		utils.Error(c, http.StatusUnauthorized, err.Error())
+		return
+	}
+	switch access.AuthMode {
+	case services.ExternalAccessModePassword:
+		if h.validShortLinkAccessToken(c, code, access.InstanceID) == "" {
+			utils.Error(c, http.StatusUnauthorized, "Share link password authentication is required")
+			return
+		}
+	case services.ExternalAccessModeShareLink:
+		if _, err := h.externalAccessService.ValidateShortLink(c.Request.Context(), code, ""); err != nil {
+			utils.Error(c, http.StatusUnauthorized, err.Error())
+			return
+		}
+	default:
+		utils.Error(c, http.StatusBadRequest, "Unsupported share link mode")
+		return
+	}
+
+	instance, ok := h.requireExternalAccessInstance(c, access)
+	if !ok {
+		return
+	}
+	instanceToken, ok := h.issueShortExternalAccessToken(c, instance, code)
+	if !ok {
+		return
+	}
+	workspaceAccess, err := services.NormalizeExternalWorkspaceAccess(access.WorkspaceAccess)
+	if err != nil {
+		workspaceAccess = services.ExternalWorkspaceAccessNone
+	}
+	workspaceAvailable := isDesktopWorkspaceInstance(instance) ||
+		(instance.WorkspacePath != nil && strings.TrimSpace(*instance.WorkspacePath) != "")
+	workspaceRoot := "Workspace"
+	if isDesktopWorkspaceInstance(instance) {
+		workspaceRoot = "/config"
+	}
+
+	utils.Success(c, http.StatusOK, "Shared instance session created", gin.H{
+		"instance": gin.H{
+			"id":            instance.ID,
+			"name":          instance.Name,
+			"type":          instance.Type,
+			"status":        instance.Status,
+			"instance_mode": instance.InstanceMode,
+			"runtime_type":  instance.RuntimeType,
+		},
+		"access_url":          instanceToken.AccessURL,
+		"session_expires_at":  instanceToken.ExpiresAt,
+		"share_expires_at":    access.ExpiresAt,
+		"workspace_access":    workspaceAccess,
+		"workspace_available": workspaceAvailable,
+		"workspace_root":      workspaceRoot,
+		"csrf_token":          sharedExternalAccessCSRFToken(code, instanceToken.Token),
+	})
+}
+
 func bearerToken(header string) string {
 	value := strings.TrimSpace(header)
 	if value == "" {
@@ -2284,9 +2363,10 @@ func externalPassword(c *gin.Context) string {
 
 func externalAccessExpirationRequest(req ExternalAccessRequest) services.ExternalAccessExpirationRequest {
 	return services.ExternalAccessExpirationRequest{
-		Mode:      strings.TrimSpace(req.ExpiresMode),
-		Preset:    strings.TrimSpace(req.ExpiresPreset),
-		ExpiresAt: req.ExpiresAt,
+		Mode:            strings.TrimSpace(req.ExpiresMode),
+		Preset:          strings.TrimSpace(req.ExpiresPreset),
+		ExpiresAt:       req.ExpiresAt,
+		WorkspaceAccess: strings.TrimSpace(req.WorkspaceAccess),
 	}
 }
 
@@ -2323,7 +2403,7 @@ func (h *InstanceHandler) issueShortExternalAccessToken(c *gin.Context, instance
 	}
 	targetPort := h.proxyService.GetTargetPortForInstance(instance)
 	upstream, _ := h.desktopAccessUpstream(c, instance, targetPort)
-	instanceToken, err := h.accessService.GenerateToken(
+	instanceToken, err := h.accessService.GenerateBoundToken(
 		instance.UserID,
 		instance.ID,
 		instance.Type,
@@ -2331,6 +2411,7 @@ func (h *InstanceHandler) issueShortExternalAccessToken(c *gin.Context, instance
 		upstream,
 		targetPort,
 		1*time.Hour,
+		sharedExternalAccessSessionBinding(code),
 	)
 	if err != nil {
 		utils.HandleError(c, err)
@@ -2349,18 +2430,30 @@ func (h *InstanceHandler) validShortLinkAccessToken(c *gin.Context, code string,
 		return ""
 	}
 	accessToken, err := h.accessService.ValidateToken(token)
-	if err != nil || accessToken.InstanceID != instanceID {
+	if err != nil ||
+		accessToken.InstanceID != instanceID ||
+		accessToken.SessionBinding != sharedExternalAccessSessionBinding(code) {
 		return ""
 	}
 	return token
 }
 
 func setShortExternalAccessCookies(c *gin.Context, instanceID int, code, token string, maxAge int) {
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(
 		fmt.Sprintf("instance_access_%d", instanceID),
 		token,
 		maxAge,
 		fmt.Sprintf("/api/v1/instances/%d/proxy", instanceID),
+		"",
+		false,
+		true,
+	)
+	c.SetCookie(
+		shortExternalAccessCookieName(code),
+		token,
+		maxAge,
+		shortExternalAccessAPICookiePath(code),
 		"",
 		false,
 		true,
@@ -2407,8 +2500,43 @@ func shortExternalAccessCookiePath(code string) string {
 	return "/s/" + code
 }
 
+func shortExternalAccessAPICookiePath(code string) string {
+	code = strings.Trim(strings.TrimSpace(code), "/")
+	if code == "" {
+		return "/api/v1/shared-instances"
+	}
+	return "/api/v1/shared-instances/" + code
+}
+
 func shortExternalAccessEntryPath(code string) string {
 	return shortExternalAccessCookiePath(code) + "/"
+}
+
+func sharedExternalAccessPagePath(code string) string {
+	code = strings.Trim(strings.TrimSpace(code), "/")
+	if code == "" {
+		return "/"
+	}
+	return "/share/" + url.PathEscape(code)
+}
+
+func sharedExternalAccessCSRFToken(code, token string) string {
+	code = strings.Trim(strings.TrimSpace(code), "/")
+	token = strings.TrimSpace(token)
+	if code == "" || token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("shared-instance-workspace\x00" + code + "\x00" + token))
+	return hex.EncodeToString(sum[:])
+}
+
+func sharedExternalAccessSessionBinding(code string) string {
+	code = strings.Trim(strings.TrimSpace(code), "/")
+	if code == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("shared-instance-session\x00" + code))
+	return hex.EncodeToString(sum[:])
 }
 
 func shortExternalAccessEntryRedirectTarget(method, requestPath, code, canonicalPath string) string {
@@ -2431,7 +2559,7 @@ func shortExternalAccessEntryRedirectTarget(method, requestPath, code, canonical
 	if !strings.HasPrefix(parsed.Path, "/api/v1/instances/") {
 		return ""
 	}
-	return parsed.Path
+	return sharedExternalAccessPagePath(code)
 }
 
 func shortExternalAccessWantsHTML(c *gin.Context) bool {

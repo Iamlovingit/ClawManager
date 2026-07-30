@@ -159,7 +159,33 @@ const oldestID = (items: { id: number }[]) =>
 const normalizeEventPayload = (event: TeamEvent) => {
   const payload = event.payload || {};
   const embedded = parseJsonRecord(payload.payload);
-  return embedded ? { ...embedded, ...payload } : payload;
+  const merged = embedded ? { ...embedded, ...payload } : { ...payload };
+  const eventType = String(event.event_type || "").toLowerCase();
+  const eventKind = payloadText(merged, ["eventKind", "event_kind", "kind", "chatKind", "chat_kind"]).toLowerCase();
+  if (eventType === "completion_deferred" || eventKind === "completion_deferred") {
+    for (const key of [
+      "resultMarkdown",
+      "result_markdown",
+      "result",
+      "answer",
+      "completionDraftMarkdown",
+      "completion_draft_markdown",
+      "completionDraftSummary",
+      "completion_draft_summary",
+    ]) {
+      delete merged[key];
+    }
+    for (const stepKey of ["collaborationStep", "collaboration_step"]) {
+      const step = parseJsonRecord(merged[stepKey]);
+      if (!step) continue;
+      const sanitizedStep = { ...step };
+      for (const key of ["content", "result", "resultMarkdown", "result_markdown", "answer"]) {
+        delete sanitizedStep[key];
+      }
+      merged[stepKey] = sanitizedStep;
+    }
+  }
+  return merged;
 };
 
 const payloadText = (
@@ -514,6 +540,34 @@ const eventTimeMs = (event: TeamEvent) => {
   return Number.isFinite(ms) ? ms : 0;
 };
 
+const WorkspaceMarkdownPreview = React.lazy(
+  () => import("../../components/WorkspaceMarkdownPreview"),
+);
+
+const chatEventTimeValue = (
+  event: TeamEvent,
+  payload: Record<string, unknown>,
+) => {
+  if (payloadBool(payload, ["chatOrderTrusted", "chat_order_trusted"]) !== true) {
+    return eventTimeValue(event);
+  }
+  const trustedValue = payloadText(payload, ["chatOrderAt", "chat_order_at"]);
+  return trustedValue && Number.isFinite(new Date(trustedValue).getTime())
+    ? trustedValue
+    : eventTimeValue(event);
+};
+
+const chatEventKind = (payload: Record<string, unknown>) =>
+  payloadText(payload, [
+    "chatBusinessKind",
+    "chat_business_kind",
+    "semanticEventKind",
+    "semantic_event_kind",
+    "eventKind",
+    "event_kind",
+    "kind",
+  ]).toLowerCase();
+
 const collaborationEventType = (
   event: TeamEvent,
   payload: Record<string, unknown>,
@@ -638,10 +692,14 @@ const collaborationContent = (
   eventType = "",
 ) => {
   const eventKind = payloadText(payload, ["eventKind", "event_kind", "kind"]).toLowerCase();
+  if (eventType === "completion_deferred" || eventKind === "completion_deferred") {
+    return (
+      payloadText(payload, ["summary", "diagnostic", "message"]) ||
+      "最终交付正在等待其余任务完成。"
+    );
+  }
   const isBusinessResult =
     isTerminalResultEventType(eventType) ||
-    eventType === "completion_deferred" ||
-    eventKind === "completion_deferred" ||
     payloadBool(payload, ["assignmentResultOnly", "assignment_result_only"]) === true;
   if (isBusinessResult) {
     const fullResult = terminalResultText(payload);
@@ -859,6 +917,8 @@ const buildCollaborationGroups = (
       taskByKey.get(taskKey) ||
       (event.task_id ? taskByID.get(event.task_id) : undefined);
     const actor = eventActorKey(event, payload, eventType, from, memberById, existingTask);
+    const chatOccurredAt = chatEventTimeValue(event, payload);
+    const chatTimeMs = chatOccurredAt ? new Date(chatOccurredAt).getTime() : 0;
     const item: CollaborationItem = {
       event,
       payload,
@@ -870,8 +930,8 @@ const buildCollaborationGroups = (
       taskKey,
       taskLabel: taskLabelFromKey(taskKey, event),
       content: collaborationContent(payload, eventType),
-      occurredAt: eventTimeValue(event),
-      timeMs: eventTimeMs(event),
+      occurredAt: chatOccurredAt,
+      timeMs: Number.isFinite(chatTimeMs) ? chatTimeMs : eventTimeMs(event),
     };
     const current = groups.get(taskKey);
     if (current) {
@@ -1061,12 +1121,17 @@ const TeamDetailPage: React.FC = () => {
       if (!details?.team.id) {
         return;
       }
-      const relPath = workspaceLinkToRelativePath(workspacePath);
-      if (!relPath) {
+      const relPath = canonicalizeLegacyPlanWorkspacePath(
+        workspacePath,
+        details.team.id,
+        activeProcessGroup?.task?.id,
+      );
+      const action = workspaceFileAction(relPath);
+      if (!relPath || !action) {
         return;
       }
       try {
-        if (isPreviewableWorkspacePath(relPath)) {
+        if (action === "preview") {
           const result = await teamService.previewWorkspaceFile(details.team.id, relPath);
           setWorkspacePreview({
             path: result.path,
@@ -1080,11 +1145,11 @@ const TeamDetailPage: React.FC = () => {
       } catch (err: any) {
         window.alert(
           err.response?.data?.error ||
-            (isPreviewableWorkspacePath(relPath) ? "预览文件失败" : "下载文件失败"),
+            (action === "preview" ? "预览文件失败" : "下载文件失败"),
         );
       }
     },
-    [details?.team.id],
+    [activeProcessGroup?.task?.id, details?.team.id],
   );
 
   const handleDownloadWorkspacePreview = useCallback(async () => {
@@ -1760,6 +1825,7 @@ function WorkspacePreviewModal({
   onDownload: () => void;
 }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const isMarkdown = isMarkdownWorkspacePath(preview.path || preview.name);
 
   const handleCopy = async () => {
     try {
@@ -1774,7 +1840,7 @@ function WorkspacePreviewModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6 backdrop-blur-sm">
-      <div className="flex max-h-[82vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+      <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3">
           <div className="min-w-0">
             <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Preview</div>
@@ -1804,10 +1870,22 @@ function WorkspacePreviewModal({
             </button>
           </div>
         </div>
-        <div className="min-h-0 overflow-auto bg-slate-50 p-5">
-          <pre className="whitespace-pre-wrap break-words rounded-xl bg-white p-4 text-sm leading-6 text-slate-800 shadow-inner">
-            {preview.content}
-          </pre>
+        <div className="min-h-0 overflow-auto bg-slate-50 p-5 sm:p-6">
+          {isMarkdown ? (
+            <React.Suspense
+              fallback={
+                <div className="flex min-h-48 items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-500">
+                  正在渲染 Markdown…
+                </div>
+              }
+            >
+              <WorkspaceMarkdownPreview content={preview.content} />
+            </React.Suspense>
+          ) : (
+            <pre className="whitespace-pre-wrap break-words rounded-xl bg-white p-4 text-sm leading-6 text-slate-800 shadow-inner">
+              {preview.content}
+            </pre>
+          )}
         </div>
       </div>
     </div>
@@ -1977,8 +2055,104 @@ function workspaceLinkToRelativePath(raw: string) {
   return normalized.replace(/^\/+/, "");
 }
 
+function isMarkdownWorkspacePath(path: string) {
+  return /\.(md|markdown|mdown|mkd)$/i.test(path.trim());
+}
+
+function canonicalizeLegacyPlanWorkspacePath(
+  path: string,
+  teamId?: number,
+  taskId?: number,
+) {
+  const normalized = workspaceLinkToRelativePath(path);
+  if (!/^plan\/[^/].+/i.test(normalized) || !teamId || !taskId) {
+    return normalized;
+  }
+  return `results/team-${teamId}-task-${taskId}/${normalized}`;
+}
+
 function isPreviewableWorkspacePath(path: string) {
   return /\.(md|txt|json)$/i.test(path.trim());
+}
+
+type WorkspaceFileAction = "preview" | "download";
+
+const DOWNLOADABLE_WORKSPACE_EXTENSIONS = new Set([
+  "7z",
+  "avi",
+  "bin",
+  "bmp",
+  "csv",
+  "css",
+  "doc",
+  "docx",
+  "gif",
+  "go",
+  "gz",
+  "htm",
+  "html",
+  "ico",
+  "java",
+  "jpeg",
+  "jpg",
+  "js",
+  "jsx",
+  "log",
+  "mov",
+  "mp3",
+  "mp4",
+  "pdf",
+  "png",
+  "ppt",
+  "pptx",
+  "ps1",
+  "py",
+  "rs",
+  "sh",
+  "sql",
+  "svg",
+  "tar",
+  "tgz",
+  "ts",
+  "tsx",
+  "tsv",
+  "wasm",
+  "wav",
+  "webm",
+  "webp",
+  "xls",
+  "xlsx",
+  "xml",
+  "yaml",
+  "yml",
+  "zip",
+]);
+const DOWNLOADABLE_EXTENSIONLESS_WORKSPACE_FILES = new Set([
+  "dockerfile",
+  "license",
+  "makefile",
+]);
+
+function workspaceFileAction(path: string): WorkspaceFileAction | null {
+  const normalized = workspaceLinkToRelativePath(path).trim();
+  if (
+    !normalized ||
+    normalized.endsWith("/") ||
+    /[<>{}*?$]/.test(normalized) ||
+    normalized.includes("[") ||
+    normalized.includes("]")
+  ) {
+    return null;
+  }
+  const filename = normalized.split("/").filter(Boolean).pop() || "";
+  if (isPreviewableWorkspacePath(normalized)) {
+    return "preview";
+  }
+  const extension = filename.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || "";
+  return DOWNLOADABLE_WORKSPACE_EXTENSIONS.has(extension) ||
+    DOWNLOADABLE_EXTENSIONLESS_WORKSPACE_FILES.has(filename.toLowerCase())
+    ? "download"
+    : null;
 }
 
 function isTeamWorkspaceLink(path: string) {
@@ -1988,6 +2162,30 @@ function isTeamWorkspaceLink(path: string) {
     /^\.?\/?team\/.+/i.test(normalized) ||
     /^\/workspaces\/teams\/user-\d+\/team-\d+-shared\//i.test(normalized)
   );
+}
+
+const TEAM_CHAT_COMPOSER_HEIGHTS = {
+  compact: 34,
+  medium: 64,
+  expanded: 94,
+} as const;
+
+function resizeTeamChatComposer(composer: HTMLTextAreaElement) {
+  composer.style.height = `${TEAM_CHAT_COMPOSER_HEIGHTS.compact}px`;
+  if (!composer.value) {
+    composer.style.overflowY = "hidden";
+    return;
+  }
+  const contentHeight = composer.scrollHeight;
+  const targetHeight =
+    contentHeight <= TEAM_CHAT_COMPOSER_HEIGHTS.compact + 2
+      ? TEAM_CHAT_COMPOSER_HEIGHTS.compact
+      : contentHeight <= TEAM_CHAT_COMPOSER_HEIGHTS.medium
+        ? TEAM_CHAT_COMPOSER_HEIGHTS.medium
+        : TEAM_CHAT_COMPOSER_HEIGHTS.expanded;
+  composer.style.height = `${targetHeight}px`;
+  composer.style.overflowY =
+    contentHeight > TEAM_CHAT_COMPOSER_HEIGHTS.expanded ? "auto" : "hidden";
 }
 
 function teamArtifactRefsFromPayload(payload: Record<string, unknown>, step?: Record<string, unknown>) {
@@ -2132,6 +2330,23 @@ function CollaborationPanel({
     (member) => !["offline", "deleted", "deleting"].includes(member.status),
   ).length;
   const messageAnchorRefs = useRef(new Map<string, HTMLDivElement | null>());
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) {
+      return;
+    }
+    resizeTeamChatComposer(composer);
+  }, [taskPrompt]);
+  useEffect(() => {
+    const handleResize = () => {
+      if (composerRef.current) {
+        resizeTeamChatComposer(composerRef.current);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
   const firstMessageByGroup = useMemo(() => {
     const result = new Map<string, string>();
     for (const message of messages) {
@@ -2280,8 +2495,16 @@ function CollaborationPanel({
         )}
         <form onSubmit={onDispatch} className="flex items-end gap-2">
           <textarea
+            ref={composerRef}
             value={taskPrompt}
-            onChange={(event) => onTaskPromptChange(event.target.value)}
+            onChange={(event) => {
+              const value = event.target.value;
+              onTaskPromptChange(value);
+              if (!value) {
+                resizeTeamChatComposer(event.target);
+              }
+            }}
+            onInput={(event) => resizeTeamChatComposer(event.currentTarget)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -2290,7 +2513,7 @@ function CollaborationPanel({
             }}
             rows={1}
             placeholder="发送消息..."
-            className="max-h-20 min-h-[34px] flex-1 resize-none rounded-full border border-[#d9d9d9] bg-white px-4 py-1.5 text-xs leading-5 text-gray-900 outline-none transition focus:border-[#9ca3af] focus:ring-2 focus:ring-gray-100"
+            className="h-[34px] min-h-[34px] flex-1 resize-none overflow-y-hidden rounded-[18px] border border-[#d9d9d9] bg-white px-4 py-1.5 text-xs leading-5 text-gray-900 outline-none transition-[height,border-color,box-shadow] duration-150 focus:border-[#9ca3af] focus:ring-2 focus:ring-gray-100"
           />
           <button
             type="submit"
@@ -2365,7 +2588,12 @@ function InteractionProcessPanel({
       : processProgress(group, steps, visualStatus, peerRoot)
     : 0;
   const isTerminal = ["succeeded", "failed", "stale"].includes(visualStatus);
-  const statusText = workflowStatusText(group?.task?.workflow_state) || processStatusText(visualStatus);
+  const latestRuntimeStatus = group ? latestGroupRuntimeStatus(group) : "";
+  const statusText = isTerminal
+    ? processStatusText(visualStatus)
+    : latestRuntimeStatus === "waiting_completion"
+      ? "等待显式完成确认"
+      : workflowStatusText(group?.task?.workflow_state) || processStatusText(visualStatus);
   const title = group?.task ? taskTitleText(group.task) : group?.title || "等待任务";
   const queryText = group?.task
     ? taskPromptText(group.task) || group.title
@@ -3082,9 +3310,9 @@ function hasMeaningfulChatBody(item: CollaborationItem) {
 }
 
 function isBusinessChatItem(item: CollaborationItem) {
-  const eventKind = payloadText(item.payload, ["eventKind", "event_kind", "kind"]).toLowerCase();
+  const eventKind = chatEventKind(item.payload);
   const businessKinds = new Set([
-    "leader_plan", "worker_plan", "worker_progress", "leader_synthesis", "leader_synthesis_reminder", "leader_decision_reminder",
+    "leader_plan", "leader_progress", "worker_plan", "worker_progress", "leader_synthesis", "leader_synthesis_reminder", "leader_decision_reminder",
     "agent_narrative", "agent_plan", "agent_assignment", "agent_handoff", "agent_progress", "agent_delivery", "agent_review", "agent_synthesis",
     "completion_deferred", "completion_candidate", "completion_validation_warning", "assignment_recovery_started", "assignment_reissued", "assignment_recovery_exhausted",
   ]);
@@ -4401,6 +4629,19 @@ function workflowStatusText(state?: string) {
   }
 }
 
+function latestGroupRuntimeStatus(group: CollaborationGroup) {
+  const latest = [...group.items].sort((left, right) => right.timeMs - left.timeMs)[0];
+  if (!latest) {
+    return "";
+  }
+  return payloadText(latest.payload, [
+    "runtimeStatus",
+    "runtime_status",
+    "availability",
+    "status",
+  ]).toLowerCase();
+}
+
 function peerLaneStatusClass(status: PeerLaneStatus) {
   switch (status) {
     case "done":
@@ -4635,7 +4876,7 @@ type TeamChatMessage = {
   content: string;
   time: number;
   sequence?: number;
-  tone?: "normal" | "leader" | "assignment" | "feedback" | "error";
+  tone?: "normal" | "leader" | "assignment" | "feedback" | "warning" | "error";
   dedupeKey?: string;
   threadKey?: string;
   sortPhase?: number;
@@ -4915,7 +5156,7 @@ function uniqueRecentHeartbeatActors(
 }
 
 function isUserVisibleProcessItem(item: CollaborationItem) {
-  const eventKind = payloadText(item.payload, ["eventKind", "event_kind", "kind"]).toLowerCase();
+  const eventKind = chatEventKind(item.payload);
   const visibleRaw = payloadText(item.payload, ["visibleToChat", "visible_to_chat"]).toLowerCase();
   const explicitlyHidden = ["false", "0", "no", "off"].includes(visibleRaw);
   const explicitlyVisible = payloadBool(item.payload, ["visibleToChat", "visible_to_chat"]) === true;
@@ -4934,6 +5175,7 @@ function isUserVisibleProcessItem(item: CollaborationItem) {
   }
   const processKinds = new Set([
     "leader_plan",
+    "leader_progress",
     "worker_plan",
     "worker_progress",
     "leader_synthesis",
@@ -4953,7 +5195,7 @@ function isUserVisibleProcessItem(item: CollaborationItem) {
 }
 
 function isAssignmentMonitorDigestItem(item: CollaborationItem) {
-  const eventKind = payloadText(item.payload, ["eventKind", "event_kind", "kind"]).toLowerCase();
+  const eventKind = chatEventKind(item.payload);
   const chatPolicy = payloadText(item.payload, ["chatPolicy", "chat_policy"]).toLowerCase();
   if (["visible", "replaceable", "warning"].includes(chatPolicy)) {
     return false;
@@ -5000,7 +5242,7 @@ function chatMessageFromItem(
   const isFeedbackEvent =
     isWorkerToLeaderMessage(senderKey, item.to, leaderMemberId) ||
     isWorkerFeedbackEvent(item, senderKey, leaderMemberId, hasContent);
-  const eventKind = payloadText(item.payload, ["eventKind", "event_kind", "kind"]).toLowerCase();
+  const eventKind = chatEventKind(item.payload);
   const isSystemProcess =
     senderKey === "clawmanager-monitor" ||
     eventKind === "assignment_check_requested" ||
@@ -5031,7 +5273,9 @@ function chatMessageFromItem(
           ? "feedback"
         : item.eventType === "task_failed" || item.eventType === "message_failed" || eventKind === "assignment_recovery_exhausted"
           ? "error"
-          : item.eventType === "completion_deferred" || eventKind === "completion_deferred" || eventKind === "completion_rejected" || eventKind === "completion_needs_confirmation"
+          : item.eventType === "completion_deferred" || eventKind === "completion_deferred"
+            ? "warning"
+          : eventKind === "completion_rejected" || eventKind === "completion_needs_confirmation"
             ? "error"
           : item.eventType.startsWith("peer_")
             ? "assignment"
@@ -5113,7 +5357,7 @@ function chatItemDedupeKey(
   isAssignmentEvent: boolean,
   isFeedbackEvent: boolean,
 ) {
-  const eventKind = payloadText(item.payload, ["eventKind", "event_kind", "kind"]).toLowerCase();
+  const eventKind = chatEventKind(item.payload);
   const messageId =
     payloadTextDeep(item.payload, ["messageId", "message_id", "inReplyTo", "in_reply_to"]) ||
     item.event.message_id ||
@@ -5124,6 +5368,14 @@ function chatItemDedupeKey(
   const assignmentId =
     payloadTextDeep(item.payload, ["assignmentId", "assignment_id", "workId", "work_id"]);
   const displayKey = payloadTextDeep(item.payload, ["displayKey", "display_key"]);
+  if (item.eventType === "completion_deferred" || eventKind === "completion_deferred") {
+    const completionId =
+      payloadTextDeep(item.payload, ["completionId", "completion_id"]) ||
+      displayKey.replace(/:\d+$/, "");
+    return completionId
+      ? `replaceable:completion-deferred:${completionId}`
+      : `replaceable:completion-deferred:${taskId}:${senderKey}`;
+  }
   // Only root-final/completion display keys represent a singleton business
   // fact. Older worker-plan/progress keys can be shared by different workers
   // when assignmentId was absent, so content identity must win for them.
@@ -5297,6 +5549,8 @@ function TeamChatMessageRow({
       ? "relative overflow-hidden border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-green-50 text-gray-950 shadow-[0_14px_28px_-22px_rgba(5,150,105,0.55)]"
       : message.tone === "error"
       ? "border border-red-100 bg-red-50 text-red-800"
+      : message.tone === "warning"
+      ? "border border-amber-200 bg-amber-50 text-amber-900"
       : "bg-white text-gray-950";
   const isAssignment = message.tone === "assignment";
   const isFeedback = message.tone === "feedback";
@@ -5332,7 +5586,19 @@ function TeamChatMessageRow({
             <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-100 pt-2">
               {message.artifactRefs.map((artifactRef) => {
                 const relativePath = workspaceLinkToRelativePath(artifactRef);
-                const previewable = isPreviewableWorkspacePath(relativePath);
+                const action = workspaceFileAction(relativePath);
+                if (!action) {
+                  return (
+                    <span
+                      key={artifactRef}
+                      title="共享目录或路径模板"
+                      className="inline-flex max-w-full items-center rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-500"
+                    >
+                      <span className="truncate">{artifactRef}</span>
+                    </span>
+                  );
+                }
+                const previewable = action === "preview";
                 return (
                   <button
                     key={artifactRef}
@@ -5623,8 +5889,9 @@ function renderInlineMarkdown(
     if (token.startsWith("`")) {
       const codeValue = token.slice(1, -1);
       const workspacePath = workspaceLinkToRelativePath(codeValue);
-      if (onWorkspaceFileOpen && isTeamWorkspaceLink(codeValue)) {
-        const previewable = isPreviewableWorkspacePath(workspacePath);
+      const workspaceAction = workspaceFileAction(workspacePath);
+      if (onWorkspaceFileOpen && isTeamWorkspaceLink(codeValue) && workspaceAction) {
+        const previewable = workspaceAction === "preview";
         nodes.push(
           <button
             key={key}
@@ -5652,8 +5919,9 @@ function renderInlineMarkdown(
       const displayToken = token.replace(/[，。；：;,:.、)）\]}】》]+$/g, "");
       const suffix = token.slice(displayToken.length);
       const workspacePath = workspaceLinkToRelativePath(displayToken);
-      if (onWorkspaceFileOpen) {
-        const previewable = isPreviewableWorkspacePath(workspacePath);
+      const workspaceAction = workspaceFileAction(workspacePath);
+      if (onWorkspaceFileOpen && workspaceAction) {
+        const previewable = workspaceAction === "preview";
         nodes.push(
           <button
             key={key}
@@ -5674,7 +5942,14 @@ function renderInlineMarkdown(
           nodes.push(suffix);
         }
       } else {
-        nodes.push(token);
+        nodes.push(
+          <code key={key} className="rounded bg-white px-1 py-0.5 font-mono text-xs text-gray-700">
+            {displayToken}
+          </code>,
+        );
+        if (suffix) {
+          nodes.push(suffix);
+        }
       }
     } else if (token.startsWith("**")) {
       nodes.push(

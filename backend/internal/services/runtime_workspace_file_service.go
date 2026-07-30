@@ -337,6 +337,7 @@ func (s *runtimeWorkspaceFileService) recordAudit(ctx context.Context, scope Wor
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	action = strings.TrimSpace(scope.AuditActionPrefix) + action
 	return s.auditRepo.Create(ctx, &models.WorkspaceFileAudit{
 		InstanceID:   scope.InstanceID,
 		UserID:       scope.UserID,

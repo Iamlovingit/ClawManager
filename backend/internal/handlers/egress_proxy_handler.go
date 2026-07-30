@@ -1,11 +1,20 @@
 package handlers
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,31 +22,94 @@ import (
 	"clawreef/internal/egresspolicy"
 	"clawreef/internal/models"
 	"clawreef/internal/services"
+	"clawreef/internal/services/k8s"
 
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	teamPreviewHost       = "clawmanager-team-preview.invalid"
+	teamPreviewPathPrefix = "/v1/"
+	teamPreviewMaxSize    = 64 << 20
+	teamTokenSecretKey    = "CLAWMANAGER_TEAM_TOKEN"
+)
+
+type teamPreviewRepository interface {
+	GetTeamByID(id int) (*models.Team, error)
+}
+
+type teamPreviewSecretReader interface {
+	GetSecretValue(ctx context.Context, namespace, name, key string) (string, error)
+}
+
 // EgressProxyHandler provides a minimal forward proxy for ordinary HTTP/HTTPS traffic.
 type EgressProxyHandler struct {
-	transport *http.Transport
-	policy    egresspolicy.Policy
-	audit     services.AuditEventService
+	transport        *http.Transport
+	dialContext      func(context.Context, string, string) (net.Conn, error)
+	policy           egresspolicy.Policy
+	audit            services.AuditEventService
+	previewRepo      teamPreviewRepository
+	previewSecrets   teamPreviewSecretReader
+	workspaceRoot    string
+	namespaceForUser func(int) string
+	previewHosts     map[string]struct{}
 }
 
 // NewEgressProxyHandler creates a new egress proxy handler.
-func NewEgressProxyHandler(audit services.AuditEventService) *EgressProxyHandler {
-	return &EgressProxyHandler{
+func NewEgressProxyHandler(audit services.AuditEventService, options ...EgressProxyOption) *EgressProxyHandler {
+	safeDialer := egresspolicy.NewSafeDialer()
+	handler := &EgressProxyHandler{
 		transport: &http.Transport{
 			Proxy:                 nil,
-			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			DialContext:           safeDialer.DialContext,
 			ForceAttemptHTTP2:     false,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
-		policy: egresspolicy.LoadFromEnv(),
-		audit:  audit,
+		dialContext:  safeDialer.DialContext,
+		policy:       egresspolicy.LoadFromEnv(),
+		audit:        audit,
+		previewHosts: map[string]struct{}{teamPreviewHost: {}},
+	}
+	for _, option := range options {
+		if option != nil {
+			option(handler)
+		}
+	}
+	return handler
+}
+
+// WithTeamArtifactPreviewOrigin registers the exact managed service host that
+// may serve signed Team previews. The legacy .invalid host remains accepted so
+// previously issued links remain compatible during rolling upgrades.
+func WithTeamArtifactPreviewOrigin(originValue string) EgressProxyOption {
+	return func(handler *EgressProxyHandler) {
+		origin, err := url.Parse(strings.TrimSpace(originValue))
+		if err != nil || !strings.EqualFold(origin.Scheme, "http") || strings.TrimSpace(origin.Hostname()) == "" {
+			return
+		}
+		if handler.previewHosts == nil {
+			handler.previewHosts = map[string]struct{}{}
+		}
+		handler.previewHosts[strings.ToLower(origin.Hostname())] = struct{}{}
+	}
+}
+
+type EgressProxyOption func(*EgressProxyHandler)
+
+func WithTeamArtifactPreview(
+	repo teamPreviewRepository,
+	secrets teamPreviewSecretReader,
+	workspaceRoot string,
+	namespaceForUser func(int) string,
+) EgressProxyOption {
+	return func(handler *EgressProxyHandler) {
+		handler.previewRepo = repo
+		handler.previewSecrets = secrets
+		handler.workspaceRoot = strings.TrimSpace(workspaceRoot)
+		handler.namespaceForUser = namespaceForUser
 	}
 }
 
@@ -45,6 +117,11 @@ func NewEgressProxyHandler(audit services.AuditEventService) *EgressProxyHandler
 func (h *EgressProxyHandler) Handle(c *gin.Context) {
 	if strings.EqualFold(c.Request.Method, http.MethodConnect) {
 		h.handleConnect(c)
+		return
+	}
+
+	if h.isTeamPreviewRequest(c.Request) {
+		h.handleTeamPreview(c)
 		return
 	}
 
@@ -65,6 +142,11 @@ func (h *EgressProxyHandler) Handle(c *gin.Context) {
 
 	resp, err := h.transport.RoundTrip(outReq)
 	if err != nil {
+		if errors.Is(err, egresspolicy.ErrUnsafeTarget) {
+			h.recordBlockedEgress(c, c.Request.URL.Host, err.Error())
+			c.String(http.StatusForbidden, "egress blocked: %s (%s)", c.Request.URL.Host, err)
+			return
+		}
 		c.String(http.StatusBadGateway, "proxy upstream error: %v", err)
 		return
 	}
@@ -89,8 +171,17 @@ func (h *EgressProxyHandler) handleConnect(c *gin.Context) {
 		return
 	}
 
-	upstreamConn, err := net.DialTimeout("tcp", target, 30*time.Second)
+	dialContext := h.dialContext
+	if dialContext == nil {
+		dialContext = egresspolicy.NewSafeDialer().DialContext
+	}
+	upstreamConn, err := dialContext(c.Request.Context(), "tcp", target)
 	if err != nil {
+		if errors.Is(err, egresspolicy.ErrUnsafeTarget) {
+			h.recordBlockedEgress(c, target, err.Error())
+			c.String(http.StatusForbidden, "egress blocked: %s (%s)", target, err)
+			return
+		}
 		c.String(http.StatusBadGateway, "proxy connect error: %v", err)
 		return
 	}
@@ -112,6 +203,199 @@ func (h *EgressProxyHandler) handleConnect(c *gin.Context) {
 
 	go tunnelConns(upstreamConn, clientConn)
 	go tunnelConns(clientConn, upstreamConn)
+}
+
+func (h *EgressProxyHandler) isTeamPreviewRequest(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	host := request.Host
+	if request.URL != nil && strings.TrimSpace(request.URL.Host) != "" {
+		host = request.URL.Host
+	}
+	normalized, _, err := net.SplitHostPort(host)
+	if err == nil {
+		host = normalized
+	}
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	_, ok := h.previewHosts[host]
+	return ok
+}
+
+func (h *EgressProxyHandler) handleTeamPreview(c *gin.Context) {
+	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+		c.Header("Allow", "GET, HEAD")
+		c.Status(http.StatusMethodNotAllowed)
+		return
+	}
+	if h.previewRepo == nil || h.previewSecrets == nil || h.namespaceForUser == nil {
+		c.String(http.StatusServiceUnavailable, "Team artifact preview is unavailable")
+		return
+	}
+
+	teamID, signedPrefix, signature, requestedPath, err := parseTeamPreviewPath(c.Request.URL.Path)
+	if err != nil {
+		c.String(http.StatusBadRequest, "invalid Team artifact preview link")
+		return
+	}
+	team, err := h.previewRepo.GetTeamByID(teamID)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "failed to resolve Team artifact preview")
+		return
+	}
+	if team == nil || team.TeamTokenSecretName == nil || strings.TrimSpace(*team.TeamTokenSecretName) == "" {
+		c.String(http.StatusNotFound, "Team artifact preview not found")
+		return
+	}
+	namespace := strings.TrimSpace(h.namespaceForUser(team.UserID))
+	token, err := h.previewSecrets.GetSecretValue(
+		c.Request.Context(),
+		namespace,
+		strings.TrimSpace(*team.TeamTokenSecretName),
+		teamTokenSecretKey,
+	)
+	if err != nil || strings.TrimSpace(token) == "" {
+		c.String(http.StatusForbidden, "Team artifact preview authorization failed")
+		return
+	}
+	if !verifyTeamPreviewSignature(token, teamID, signedPrefix, signature) {
+		c.String(http.StatusForbidden, "Team artifact preview authorization failed")
+		return
+	}
+
+	relativePath, err := cleanTeamPreviewRelativePath(joinTeamPreviewPath(signedPrefix, requestedPath))
+	if err != nil || relativePath == "" {
+		c.String(http.StatusBadRequest, "invalid Team artifact preview path")
+		return
+	}
+	rootPath := k8s.TeamSharedWorkspacePath(h.workspaceRoot, team.UserID, team.ID)
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.String(http.StatusNotFound, "Team artifact preview not found")
+			return
+		}
+		c.String(http.StatusInternalServerError, "failed to open Team artifact preview")
+		return
+	}
+	defer root.Close()
+	file, err := root.Open(filepath.FromSlash(relativePath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.String(http.StatusNotFound, "Team artifact preview not found")
+			return
+		}
+		c.String(http.StatusForbidden, "Team artifact preview path is not accessible")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		c.String(http.StatusNotFound, "Team artifact preview not found")
+		return
+	}
+	if info.Size() > teamPreviewMaxSize {
+		c.String(http.StatusRequestEntityTooLarge, "Team artifact is too large to preview")
+		return
+	}
+
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(info.Name())))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	setTeamPreviewHeaders(c.Writer.Header(), contentType)
+	http.ServeContent(c.Writer, c.Request, info.Name(), info.ModTime(), file)
+}
+
+func parseTeamPreviewPath(rawPath string) (int, string, string, string, error) {
+	if !strings.HasPrefix(rawPath, teamPreviewPathPrefix) {
+		return 0, "", "", "", fmt.Errorf("unexpected preview path")
+	}
+	parts := strings.Split(strings.TrimPrefix(rawPath, teamPreviewPathPrefix), "/")
+	if len(parts) < 4 {
+		return 0, "", "", "", fmt.Errorf("incomplete preview path")
+	}
+	teamID, err := strconv.Atoi(parts[0])
+	if err != nil || teamID <= 0 {
+		return 0, "", "", "", fmt.Errorf("invalid team id")
+	}
+	prefix, err := decodeTeamPreviewPrefix(parts[1])
+	if err != nil {
+		return 0, "", "", "", err
+	}
+	signature := strings.TrimSpace(parts[2])
+	if signature == "" {
+		return 0, "", "", "", fmt.Errorf("missing signature")
+	}
+	requestedPath, err := cleanTeamPreviewRelativePath(strings.Join(parts[3:], "/"))
+	if err != nil {
+		return 0, "", "", "", err
+	}
+	return teamID, prefix, signature, requestedPath, nil
+}
+
+func decodeTeamPreviewPrefix(encoded string) (string, error) {
+	if encoded == "_" {
+		return "", nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("invalid signed prefix")
+	}
+	return cleanTeamPreviewRelativePath(string(decoded))
+}
+
+func cleanTeamPreviewRelativePath(raw string) (string, error) {
+	value := filepath.ToSlash(filepath.Clean(strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))))
+	value = strings.TrimPrefix(value, "/")
+	if value == "" || value == "." {
+		return "", nil
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." || strings.ContainsRune(segment, '\x00') {
+			return "", fmt.Errorf("invalid preview path")
+		}
+	}
+	return value, nil
+}
+
+func joinTeamPreviewPath(prefix, requestedPath string) string {
+	if prefix == "" {
+		return requestedPath
+	}
+	if requestedPath == "" {
+		return prefix
+	}
+	return prefix + "/" + requestedPath
+}
+
+func teamPreviewSignaturePayload(teamID int, prefix string) string {
+	return fmt.Sprintf("team-preview-v1\n%d\n%s", teamID, prefix)
+}
+
+func verifyTeamPreviewSignature(token string, teamID int, prefix, signature string) bool {
+	provided, err := base64.RawURLEncoding.DecodeString(signature)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(token))
+	_, _ = mac.Write([]byte(teamPreviewSignaturePayload(teamID, prefix)))
+	return hmac.Equal(provided, mac.Sum(nil))
+}
+
+func setTeamPreviewHeaders(headers http.Header, contentType string) {
+	headers.Set("Content-Type", contentType)
+	headers.Set("Cache-Control", "private, no-store, max-age=0")
+	headers.Set("Referrer-Policy", "no-referrer")
+	headers.Set("X-Content-Type-Options", "nosniff")
+	headers.Set("X-Frame-Options", "DENY")
+	headers.Set("Cross-Origin-Opener-Policy", "same-origin")
+	headers.Set(
+		"Content-Security-Policy",
+		"sandbox allow-scripts allow-same-origin allow-forms allow-modals allow-popups; "+
+			"default-src 'self' https: data: blob:; connect-src 'self' https: wss:; "+
+			"object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+	)
 }
 
 func (h *EgressProxyHandler) recordBlockedEgress(c *gin.Context, host, reason string) {
