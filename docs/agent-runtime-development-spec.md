@@ -106,6 +106,7 @@ Content-Type: application/json
   "user_id": 45,
   "agent_type": "hermes",
   "workspace_path": "/workspaces/hermes/user-45/instance-123",
+  "gateway_port": 20000,
   "port_range": {
     "start": 20000,
     "end": 20299
@@ -126,6 +127,8 @@ Content-Type: application/json
   }
 }
 ```
+
+`gateway_port` 是 ClawManager 已预留的精确主端口，当前 AgentRuntime 必须优先使用该值；`port_range` 只用于兼容尚未提供精确端口的调用。Hermes Lite 每个实例只预留这个主端口，OpenClaw Lite 则从主端口起预留 gateway、Chromium CDP 和 browser control 三端口组。
 
 成功响应必须快速返回：
 
@@ -177,8 +180,11 @@ list_used()
 - 分配时持有互斥锁。
 - 在锁内检查 agent 内存状态和系统监听端口。
 - runtime 如果需要主端口、control 端口、browser 端口或 sidecar 端口，必须一次分配一组端口。
+- OpenClaw Lite 使用固定三端口组：`p` 为 gateway，`p+1` 为 Chromium CDP，`p+2` 为 browser control；ClawManager 只下发主端口 `p`。
 - 启动失败、健康检查失败、DELETE 成功后必须释放端口。
 - `used_slots` 来自真实 `starting` 和健康 `running` gateway 数量，不能来自旧缓存。
+
+`RUNTIME_GATEWAY_START_IN_FLIGHT_LIMIT` 是 ClawManager 控制面的调度参数，不是 runtime agent 参数。它限制控制面同时向单个 runtime Pod 发起的 gateway 创建数量，默认值为 `32`；容量为 100 的部署清单显式设置为 `100`。
 
 资源隔离要求：
 
