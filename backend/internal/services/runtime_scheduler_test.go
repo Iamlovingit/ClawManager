@@ -2302,6 +2302,9 @@ func (r *fakeRuntimeInstanceRepo) GetByID(id int) (*models.Instance, error) {
 	defer r.mu.Unlock()
 	return r.byID[id], nil
 }
+func (r *fakeRuntimeInstanceRepo) FindByPodIP(string) (*models.Instance, error) {
+	return nil, nil
+}
 func (r *fakeRuntimeInstanceRepo) GetByAccessToken(accessToken string) (*models.Instance, error) {
 	return nil, nil
 }
