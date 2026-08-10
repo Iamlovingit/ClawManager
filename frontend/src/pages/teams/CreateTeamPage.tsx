@@ -61,7 +61,7 @@ const RESOURCE_PRESETS: Record<
 };
 
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const FIXED_RUNTIME_TYPE: RuntimeType = "openclaw";
+const LEADER_RUNTIME_TYPE: RuntimeType = "openclaw";
 const FIXED_INSTANCE_MODE: InstanceMode = "lite";
 const FIXED_COMMUNICATION_MODE: TeamCommunicationMode = "leader_mediated";
 const TEAM_TEMPLATE_DISPLAY_COPY: Record<
@@ -128,12 +128,17 @@ const normalizedPreset = (
 ): Exclude<ResourcePresetKey, "custom"> =>
   preset && preset !== "custom" ? preset : "small";
 
+// Hermes Lite Team workers are temporarily unavailable in the creation UI.
+// Keep the runtime union for existing Teams, but ensure every new Team draft
+// and request uses the supported OpenClaw Lite worker runtime.
+const TEAM_WORKER_RUNTIME_TYPE: RuntimeType = "openclaw";
+
 const draftFromTemplateMember = (
   templateMember: TeamMemberTemplateMember,
   usedIds: Set<string>,
   index: number,
   isLeader: boolean,
-  image: string,
+  imageForRuntime: (runtimeType: RuntimeType) => string,
 ): TeamMemberDraft => {
   const preset = normalizedPreset(templateMember.resourcePreset);
   const config = RESOURCE_PRESETS[preset];
@@ -142,13 +147,17 @@ const draftFromTemplateMember = (
       ? templateMember.role
       : "member";
 
+  const runtimeType: RuntimeType = isLeader
+    ? LEADER_RUNTIME_TYPE
+    : TEAM_WORKER_RUNTIME_TYPE;
+
   return defaultMember({
     ...templateMember,
     memberId: uniqueMemberId(templateMember.memberId, usedIds, index),
     role: isLeader ? "leader" : templateRole,
-    runtimeType: FIXED_RUNTIME_TYPE,
+    runtimeType,
     instanceMode: FIXED_INSTANCE_MODE,
-    image,
+    image: imageForRuntime(runtimeType),
     resourcePreset: preset,
     isLeader,
     cpuCores: config.cpuCores,
@@ -159,7 +168,10 @@ const draftFromTemplateMember = (
   });
 };
 
-const buildTemplateMembers = (template: TeamMemberTemplate, image: string) => {
+const buildTemplateMembers = (
+  template: TeamMemberTemplate,
+  imageForRuntime: (runtimeType: RuntimeType) => string,
+) => {
   const usedIds = new Set<string>();
   const importedMembers: TeamMemberDraft[] = [];
   let leaderAssigned = false;
@@ -170,7 +182,13 @@ const buildTemplateMembers = (template: TeamMemberTemplate, image: string) => {
       leaderAssigned = true;
     }
     importedMembers.push(
-      draftFromTemplateMember(templateMember, usedIds, index + 1, shouldBeLeader, image),
+      draftFromTemplateMember(
+        templateMember,
+        usedIds,
+        index + 1,
+        shouldBeLeader,
+        imageForRuntime,
+      ),
     );
   });
 
@@ -179,6 +197,8 @@ const buildTemplateMembers = (template: TeamMemberTemplate, image: string) => {
       ...importedMembers[0],
       isLeader: true,
       role: "leader",
+      runtimeType: LEADER_RUNTIME_TYPE,
+      image: imageForRuntime(LEADER_RUNTIME_TYPE),
     };
   }
 
@@ -229,7 +249,7 @@ const CreateTeamPage: React.FC = () => {
     initialTemplate?.id || "",
   );
   const [members, setMembers] = useState<TeamMemberDraft[]>(() =>
-    initialTemplate ? buildTemplateMembers(initialTemplate, "") : [],
+    initialTemplate ? buildTemplateMembers(initialTemplate, () => "") : [],
   );
   const [loadingImages, setLoadingImages] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -265,6 +285,10 @@ const CreateTeamPage: React.FC = () => {
   );
   const selectedImage = defaultOpenClawMemberImages[0];
   const openClawLiteImage = selectedImage?.image || "";
+  const imageForRuntime = useCallback(
+    (_runtimeType: RuntimeType) => openClawLiteImage,
+    [openClawLiteImage],
+  );
 
   useEffect(() => {
     const loadImages = async () => {
@@ -289,7 +313,7 @@ const CreateTeamPage: React.FC = () => {
     }
     setSelectedTemplateId(template.id);
     setName(template.teamName || "");
-    setMembers(buildTemplateMembers(template, openClawLiteImage));
+    setMembers(buildTemplateMembers(template, imageForRuntime));
     setError(null);
   };
 
@@ -398,7 +422,7 @@ const CreateTeamPage: React.FC = () => {
       memberId: normalizedMemberId,
       displayName: member.name.trim() || normalizedMemberId,
       role: effectiveMemberRole(member),
-      runtimeType: FIXED_RUNTIME_TYPE,
+      runtimeType: member.isLeader ? LEADER_RUNTIME_TYPE : member.runtimeType,
       isLeader: member.isLeader,
     });
     const merged = {
@@ -445,12 +469,18 @@ const CreateTeamPage: React.FC = () => {
         return `成员 ID 重复：${memberId}`;
       }
       memberIds.add(memberId);
+      if (member.isLeader && member.runtimeType !== LEADER_RUNTIME_TYPE) {
+        return "Leader 必须使用 OpenClaw Lite";
+      }
+      if (!imageForRuntime(TEAM_WORKER_RUNTIME_TYPE)) {
+        return "没有可用的 OpenClaw Lite 镜像";
+      }
       if (member.cpuCores <= 0 || member.memoryGb <= 0 || member.diskGb <= 0) {
         return `成员 ${memberId} 的资源规格无效`;
       }
     }
     return null;
-  }, [loadingImages, members, name, openClawLiteImage]);
+  }, [imageForRuntime, loadingImages, members, name, openClawLiteImage]);
 
   const environmentDraft = buildEnvironmentOverridesPayload();
   const openClawPlanInvalid =
@@ -502,13 +532,16 @@ const CreateTeamPage: React.FC = () => {
       members: members.map((member) => {
         const normalizedMemberId = normalizeMemberId(member.memberId);
         const memberDescription = effectiveMemberDescription(member);
+        const runtimeType = member.isLeader
+          ? LEADER_RUNTIME_TYPE
+          : TEAM_WORKER_RUNTIME_TYPE;
         return {
           member_id: normalizedMemberId,
           name: displayNameForMember(member),
           role: effectiveMemberRole(member),
           mode: FIXED_INSTANCE_MODE,
           instance_mode: FIXED_INSTANCE_MODE,
-          runtime_type: FIXED_RUNTIME_TYPE,
+          runtime_type: runtimeType,
           description: memberDescription || undefined,
           is_leader: member.isLeader,
           cpu_cores: member.cpuCores,
@@ -516,7 +549,7 @@ const CreateTeamPage: React.FC = () => {
           disk_gb: member.diskGb,
           gpu_enabled: false,
           gpu_count: 0,
-          image_registry: openClawLiteImage,
+          image_registry: imageForRuntime(runtimeType),
           environment_overrides: buildMemberEnvironmentOverrides(
             member,
             normalizedMemberId,
@@ -766,9 +799,10 @@ const CreateTeamPage: React.FC = () => {
               )}
 
               <div className="mt-5 overflow-hidden rounded-xl border border-[#eadfd8]">
-                <div className="hidden grid-cols-[minmax(120px,0.9fr)_minmax(140px,1fr)_minmax(150px,1fr)_minmax(280px,1.8fr)] gap-3 border-b border-[#eadfd8] bg-gray-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500 lg:grid">
+                <div className="hidden grid-cols-[minmax(110px,0.8fr)_minmax(130px,0.9fr)_minmax(190px,1.15fr)_minmax(140px,0.9fr)_minmax(260px,1.7fr)] gap-3 border-b border-[#eadfd8] bg-gray-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500 lg:grid">
                   <div>成员 ID</div>
                   <div>显示名称</div>
+                  <div>运行时</div>
                   <div>角色模板</div>
                   <div>角色解释</div>
                 </div>
@@ -776,7 +810,7 @@ const CreateTeamPage: React.FC = () => {
                   {members.map((member) => (
                     <div
                       key={member.id}
-                      className="grid grid-cols-1 gap-3 px-4 py-4 text-sm lg:grid-cols-[minmax(120px,0.9fr)_minmax(140px,1fr)_minmax(150px,1fr)_minmax(280px,1.8fr)] lg:items-center"
+                      className="grid grid-cols-1 gap-3 px-4 py-4 text-sm lg:grid-cols-[minmax(110px,0.8fr)_minmax(130px,0.9fr)_minmax(190px,1.15fr)_minmax(140px,0.9fr)_minmax(260px,1.7fr)] lg:items-center"
                     >
                       <div>
                         <div className="text-xs font-medium text-gray-500 lg:hidden">
@@ -796,6 +830,20 @@ const CreateTeamPage: React.FC = () => {
                         <div className="text-gray-900">
                           {displayNameForMember(member)}
                         </div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-gray-500 lg:hidden">
+                          运行时
+                        </div>
+                        {member.isLeader ? (
+                          <div className="inline-flex rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
+                            OpenClaw Lite
+                          </div>
+                        ) : (
+                          <div className="inline-flex rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
+                            OpenClaw Lite
+                          </div>
+                        )}
                       </div>
                       <div>
                         <div className="text-xs font-medium text-gray-500 lg:hidden">
