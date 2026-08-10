@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -909,6 +910,9 @@ func (s *instanceService) Start(instanceID int) error {
 	}
 
 	if runtimeType, ok := v2RuntimeTypeForInstance(instance); ok {
+		if err := s.prepareV2InstanceStart(ctx, instance); err != nil {
+			return err
+		}
 		return s.startV2Instance(ctx, instance, runtimeType)
 	}
 
@@ -1435,6 +1439,37 @@ func (s *instanceService) startV2Instance(ctx context.Context, instance *models.
 	return nil
 }
 
+// prepareV2InstanceStart makes an explicit start retry idempotent. A failed or
+// older binding belongs to the previous gateway attempt and must not be allowed
+// to overwrite the new runtime generation during scheduler reconciliation.
+func (s *instanceService) prepareV2InstanceStart(ctx context.Context, instance *models.Instance) error {
+	if s.bindingRepo != nil {
+		binding, err := s.bindingRepo.GetByInstanceID(ctx, instance.ID)
+		if err != nil {
+			return fmt.Errorf("failed to get v2 runtime binding before start: %w", err)
+		}
+		if binding != nil {
+			if binding.Generation > instance.RuntimeGeneration {
+				return fmt.Errorf("v2 runtime binding generation %d is newer than instance generation %d", binding.Generation, instance.RuntimeGeneration)
+			}
+			state := strings.ToLower(strings.TrimSpace(binding.State))
+			if binding.Generation == instance.RuntimeGeneration && (state == "running" || state == "ready" || state == "healthy") {
+				return fmt.Errorf("instance is already running")
+			}
+			if err := s.cleanupV2GatewayBinding(ctx, instance); err != nil {
+				return err
+			}
+		}
+	}
+	runtimeType, runtimeTypeOK := NormalizeV2RuntimeType(instance.Type)
+	if runtimeTypeOK && runtimeType == RuntimeTypeOpenClaw && instance.WorkspacePath != nil {
+		if _, err := quarantineCorruptLegacyOpenClawTaskState(strings.TrimSpace(*instance.WorkspacePath), instance.RuntimeGeneration, instance.RuntimeErrorMessage); err != nil {
+			return fmt.Errorf("failed to quarantine corrupt legacy OpenClaw task state: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *instanceService) stopV2Instance(ctx context.Context, instance *models.Instance) error {
 	if err := s.instanceRepo.UpdateRuntimeState(ctx, instance.ID, "stopped", instance.RuntimeGeneration, nil); err != nil {
 		return fmt.Errorf("failed to mark v2 instance stopped: %w", err)
@@ -1490,7 +1525,7 @@ func (s *instanceService) cleanupV2GatewayBinding(ctx context.Context, instance 
 		} else if pod == nil {
 			return fmt.Errorf("runtime pod %d is not available for v2 cleanup", binding.RuntimePodID)
 		} else if pod != nil && pod.AgentEndpoint != nil && strings.TrimSpace(*pod.AgentEndpoint) != "" && s.agentClient != nil && binding.GatewayID != "" {
-			if err := s.agentClient.DeleteGateway(ctx, strings.TrimSpace(*pod.AgentEndpoint), binding.GatewayID); err != nil {
+			if err := s.agentClient.DeleteGateway(ctx, strings.TrimSpace(*pod.AgentEndpoint), binding.GatewayID); err != nil && !errors.Is(err, ErrRuntimeAgentNotFound) {
 				return fmt.Errorf("failed to delete v2 gateway: %w", err)
 			}
 		}
