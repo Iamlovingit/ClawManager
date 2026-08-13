@@ -62,7 +62,7 @@ func TestBuildGatewayEnvInjectsGatewayModelCatalog(t *testing.T) {
 	t.Setenv("CLAWMANAGER_LLM_GATEWAY_BASE_URL", "http://gateway.example/api/v1/gateway/llm")
 
 	token := "igt_test_token"
-	for _, instanceType := range []string{"openclaw", "hermes", "workbuddy"} {
+	for _, instanceType := range []string{"openclaw", "hermes", "workbuddy", "opencode"} {
 		t.Run(instanceType, func(t *testing.T) {
 			service := &instanceService{
 				llmModelRepo: &stubLLMModelRepository{

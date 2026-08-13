@@ -264,3 +264,22 @@ func TestMigration045BootstrapsAndUpgradesLLMModels(t *testing.T) {
 		t.Fatalf("migration 045 must create the legacy llm_models table before adding reasoning_enabled")
 	}
 }
+
+func TestMigration046AddsOpenCodeLiteRuntime(t *testing.T) {
+	raw, err := embeddedMigrations.ReadFile("migrations/046_add_opencode_lite_runtime.sql")
+	if err != nil {
+		t.Fatalf("read migration 046: %v", err)
+	}
+
+	sql := string(raw)
+	for _, required := range []string{
+		"'opencode'",
+		"'gateway'",
+		"'OpenCode Lite'",
+		"ghcr.io/yuan-lab-llm/agentsruntime/opencode-lite:latest",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration 046 must contain %s", required)
+		}
+	}
+}

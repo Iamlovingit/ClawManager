@@ -49,6 +49,7 @@ const supportsRuntimeInjection = (type: string) =>
   type === "openclaw" || type === "hermes" || type === "workbuddy";
 const isProOnlyInstanceType = (type: string) =>
   type === "custom" || type === "workbuddy";
+const isLiteOnlyInstanceType = (type: string) => type === "opencode";
 const DESKTOP_STREAM_PROFILES: Array<{
   id: DesktopStreamProfile;
   labelKey: string;
@@ -109,6 +110,10 @@ const INSTANCE_TYPE_I18N_KEYS: Record<
     label: "instances.typeOptions.hermes.label",
     description: "instances.typeOptions.hermes.description",
   },
+  opencode: {
+    label: "instances.typeOptions.opencode.label",
+    description: "instances.typeOptions.opencode.description",
+  },
   workbuddy: {
     label: "instances.typeOptions.workbuddy.label",
     description: "instances.typeOptions.workbuddy.description",
@@ -124,11 +129,11 @@ const INSTANCE_TYPE_I18N_KEYS: Record<
 const TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS = new Set(["workbuddy"]);
 
 const FALLBACK_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter((type) =>
-  ["openclaw", "hermes", "workbuddy"].includes(type.id) &&
+  ["openclaw", "hermes", "workbuddy", "opencode"].includes(type.id) &&
   !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
 );
 const CONFIGURED_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter((type) =>
-  ["openclaw", "hermes", "workbuddy", "custom"].includes(type.id) &&
+  ["openclaw", "hermes", "workbuddy", "opencode", "custom"].includes(type.id) &&
   !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
 );
 
@@ -522,7 +527,10 @@ const CreateInstancePage: React.FC = () => {
   const selectedRuntimeType =
     selectedMode === "lite" ? "gateway" : "desktop";
   const availableTypesForMode = availableTypes.filter(
-    (item) => selectedMode === "pro" || !isProOnlyInstanceType(item.id),
+    (item) =>
+      selectedMode === "lite"
+        ? !isProOnlyInstanceType(item.id)
+        : !isLiteOnlyInstanceType(item.id),
   );
   const selectedType = availableTypesForMode.find(
     (item) => item.id === formData.type,
@@ -568,9 +576,12 @@ const CreateInstancePage: React.FC = () => {
               onClick={() =>
                 setFormData((current) => {
                   const fallbackType =
-                    mode.id === "lite" && isProOnlyInstanceType(current.type)
-                      ? availableTypes.find(
-                          (type) => !isProOnlyInstanceType(type.id),
+                    (mode.id === "lite" && isProOnlyInstanceType(current.type)) ||
+                    (mode.id === "pro" && isLiteOnlyInstanceType(current.type))
+                      ? availableTypes.find((type) =>
+                          mode.id === "lite"
+                            ? !isProOnlyInstanceType(type.id)
+                            : !isLiteOnlyInstanceType(type.id),
                         )
                       : undefined;
 
@@ -1154,6 +1165,14 @@ const CreateInstancePage: React.FC = () => {
           alt="Workbuddy"
           className="h-10 w-10 object-contain"
         />
+      );
+    }
+
+    if (typeId === "opencode") {
+      return (
+        <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-950 font-mono text-sm font-bold text-white">
+          OC
+        </span>
       );
     }
 

@@ -215,6 +215,37 @@ func TestSystemImageSettingServiceListIncludesHermesLiteDefault(t *testing.T) {
 	}
 }
 
+func TestSystemImageSettingServiceListIncludesOpenCodeLiteOnly(t *testing.T) {
+	service := NewSystemImageSettingService(&stubSystemImageSettingRepository{})
+
+	items, err := service.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+
+	foundGateway := false
+	for _, item := range items {
+		if item.InstanceType != RuntimeTypeOpenCode {
+			continue
+		}
+		if item.RuntimeType == RuntimeBackendDesktop {
+			t.Fatalf("OpenCode must not expose a Pro desktop preset: %#v", item)
+		}
+		if item.RuntimeType == RuntimeBackendGateway {
+			foundGateway = true
+			if item.Image != defaultGatewaySystemImageSettings[RuntimeTypeOpenCode] {
+				t.Fatalf("OpenCode Lite image = %q", item.Image)
+			}
+			if item.DisplayName != "OpenCode Lite" || !item.IsEnabled {
+				t.Fatalf("unexpected OpenCode Lite preset: %#v", item)
+			}
+		}
+	}
+	if !foundGateway {
+		t.Fatal("expected OpenCode Lite gateway preset")
+	}
+}
+
 func TestSystemImageSettingServiceListIncludesWorkbuddyProDefault(t *testing.T) {
 	service := NewSystemImageSettingService(&stubSystemImageSettingRepository{})
 

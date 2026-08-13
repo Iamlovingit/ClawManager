@@ -14,7 +14,8 @@ export interface Instance {
     | "custom"
     | "webtop"
     | "hermes"
-    | "workbuddy";
+    | "workbuddy"
+    | "opencode";
   runtime_type: "desktop" | "shell" | "gateway";
   instance_mode: "lite" | "pro";
   status: "creating" | "running" | "stopped" | "error" | "deleting";
@@ -45,7 +46,7 @@ export interface Instance {
   stopped_at?: string;
 }
 
-export type V2InstanceType = "openclaw" | "hermes";
+export type V2InstanceType = "openclaw" | "hermes" | "opencode";
 export type InstanceMode = "lite" | "pro";
 export type InstanceAvailability = "available" | "starting" | "unavailable";
 
@@ -181,7 +182,8 @@ export interface CreateInstanceRequest {
     | "custom"
     | "webtop"
     | "hermes"
-    | "workbuddy";
+    | "workbuddy"
+    | "opencode";
   mode?: InstanceMode;
   instance_mode?: InstanceMode;
   runtime_type?: "desktop" | "shell" | "gateway";
@@ -319,6 +321,14 @@ export const INSTANCE_TYPES: InstanceType[] = [
     description: "Hermes runtime built on the webtop desktop base",
     icon: "hermes",
     defaultOs: "hermes",
+    defaultVersion: "latest",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode Lite",
+    description: "Shared-pod OpenCode web workspace managed by ClawManager",
+    icon: "opencode",
+    defaultOs: "opencode",
     defaultVersion: "latest",
   },
   {

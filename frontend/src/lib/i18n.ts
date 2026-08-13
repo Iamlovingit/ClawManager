@@ -2450,6 +2450,10 @@ export const translations: Record<Locale, TranslationTree> = {
           label: "Hermes Runtime",
           description: "Hermes runtime built on the webtop desktop base",
         },
+        opencode: {
+          label: "OpenCode Lite",
+          description: "Shared-pod OpenCode web workspace managed by ClawManager",
+        },
         workbuddy: {
           label: "Workbuddy",
           description: "Managed Workbuddy runtime on a webtop desktop base",
@@ -3981,6 +3985,10 @@ export const translations: Record<Locale, TranslationTree> = {
           label: "Hermes Runtime",
           description: "基于 Webtop 桌面基础镜像构建的 Hermes 运行时",
         },
+        opencode: {
+          label: "OpenCode Lite",
+          description: "由 ClawManager 管理、共享 Pod 的 OpenCode Web 工作空间",
+        },
         workbuddy: {
           label: "Workbuddy",
           description: "基于 Webtop 桌面基础镜像构建的托管 Workbuddy 运行时",
@@ -5453,6 +5461,11 @@ export const translations: Record<Locale, TranslationTree> = {
           description:
             "Webtop デスクトップベースで構築された Hermes ランタイム",
         },
+        opencode: {
+          label: "OpenCode Lite",
+          description:
+            "ClawManager が管理する共有 Pod 型の OpenCode Web ワークスペース",
+        },
         workbuddy: {
           label: "Workbuddy",
           description:
@@ -6889,6 +6902,10 @@ export const translations: Record<Locale, TranslationTree> = {
         hermes: {
           label: "Hermes Runtime",
           description: "Webtop 데스크톱 기반으로 빌드된 Hermes 런타임",
+        },
+        opencode: {
+          label: "OpenCode Lite",
+          description: "ClawManager가 관리하는 공유 Pod 기반 OpenCode 웹 작업 공간",
         },
         workbuddy: {
           label: "Workbuddy",
@@ -8348,6 +8365,11 @@ export const translations: Record<Locale, TranslationTree> = {
           label: "Hermes Runtime",
           description:
             "Hermes-Runtime auf Basis des Webtop-Desktop-Images",
+        },
+        opencode: {
+          label: "OpenCode Lite",
+          description:
+            "Von ClawManager verwalteter OpenCode-Web-Arbeitsbereich in einem gemeinsam genutzten Pod",
         },
         workbuddy: {
           label: "Workbuddy",

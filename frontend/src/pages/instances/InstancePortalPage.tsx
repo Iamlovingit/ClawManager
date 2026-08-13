@@ -30,6 +30,7 @@ function supportsWorkspace(instance: Instance) {
     instance.type === "openclaw" ||
     instance.type === "hermes" ||
     instance.type === "workbuddy" ||
+    instance.type === "opencode" ||
     Boolean(instance.workspace_path)
   );
 }
@@ -42,11 +43,20 @@ function workspaceInitialPath(instance: Instance, isPro: boolean) {
   if (type === "openclaw" && !isPro) {
     return "home/.openclaw";
   }
+  if (type === "opencode" && !isPro) {
+    return "home";
+  }
   return isPro ? "/config" : undefined;
 }
 
 function typeLabel(type: Instance["type"]) {
-  return type === "hermes" ? "Hermes" : type === "openclaw" ? "OpenClaw" : type;
+  return type === "hermes"
+    ? "Hermes"
+    : type === "openclaw"
+      ? "OpenClaw"
+      : type === "opencode"
+        ? "OpenCode"
+        : type;
 }
 
 function modeLabel(mode: Instance["instance_mode"]) {

@@ -5,10 +5,10 @@ import "strings"
 const defaultManagedSessionKey = "main"
 
 // IsManagedInstanceType reports whether an instance type participates in managed
-// runtime LLM governance (OpenClaw / Hermes / Workbuddy).
+// runtime LLM governance (OpenClaw / Hermes / Workbuddy / OpenCode).
 func IsManagedInstanceType(instanceType string) bool {
 	switch strings.ToLower(strings.TrimSpace(instanceType)) {
-	case "openclaw", "hermes", "workbuddy":
+	case "openclaw", "hermes", "workbuddy", "opencode":
 		return true
 	default:
 		return false

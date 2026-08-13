@@ -60,6 +60,126 @@ kubectl get pvc -n clawmanager-system
 kubectl get pods -n clawmanager-system
 ```
 
+## OpenCode Lite Public-Origin Strategy
+
+OpenCode Lite serves its web application and APIs from absolute root paths such
+as `/assets` and `/global/health`. Each logical OpenCode instance therefore
+needs a dedicated browser origin even though the runtime Pod is shared. DNS and
+TLS are deployment concerns; ClawManager builds instance links from this
+environment variable:
+
+```text
+CLAWMANAGER_OPENCODE_PUBLIC_URL_TEMPLATE
+```
+
+The value must be an absolute HTTP(S) URL and must contain `{instance_id}`.
+ClawManager replaces that placeholder whenever it creates an instance access
+link and appends the short-lived access token as a query parameter. The bundled
+manifests expose the variable with an empty value so the installer must select
+one of the following deployment strategies.
+
+### Connected Networks: `nip.io`
+
+Use this strategy only when user devices can resolve `nip.io`. Convert the
+ClawManager entry IP to the dash form required by `nip.io` and set a template
+such as:
+
+```text
+CLAWMANAGER_OPENCODE_PUBLIC_URL_TEMPLATE=https://opencode-{instance_id}.172-16-1-12.nip.io:39443/
+```
+
+For instance `172`, ClawManager returns:
+
+```text
+https://opencode-172.172-16-1-12.nip.io:39443/
+```
+
+The TLS certificate served by the ClawManager HTTPS gateway must cover the
+generated hostnames, for example `*.172-16-1-12.nip.io`, and its issuing CA must
+be trusted by user devices. Resolving a hostname through `nip.io` does not
+provide a TLS certificate.
+
+### Offline Networks: Authoritative BIND DNS
+
+For an offline installation, deploy an authoritative DNS server inside the
+cluster and configure DHCP or the existing LAN DNS to send the selected zone to
+it. BIND 9 is the recommended server. Use a deployment-owned zone such as
+`clawmanager.test` and return the ClawManager gateway IP for both the zone apex
+and its wildcard:
+
+```text
+CLAWMANAGER_OPENCODE_PUBLIC_URL_TEMPLATE=https://opencode-{instance_id}.clawmanager.test:39443/
+```
+
+Minimal BIND configuration:
+
+```text
+options {
+    directory "/var/cache/bind";
+    recursion no;
+    listen-on port 53 { any; };
+    listen-on-v6 { none; };
+    allow-query { localnets; };
+};
+
+zone "clawmanager.test" IN {
+    type primary;
+    file "/etc/bind/db.clawmanager.test";
+};
+```
+
+Example `db.clawmanager.test` zone file; replace both example addresses before
+deployment:
+
+```text
+$TTL 60
+@  IN SOA ns.clawmanager.test. hostmaster.clawmanager.test. (
+       2026081301 300 60 86400 60 )
+   IN NS  ns.clawmanager.test.
+ns IN A   172.16.1.13
+@  IN A   172.16.1.12
+*  IN A   172.16.1.12
+```
+
+Deploy a currently supported BIND 9 image, mirror it into the offline registry,
+and expose both UDP 53 and TCP 53 through a stable LAN-reachable address. A
+bare-metal cluster can use a `LoadBalancer` implementation such as MetalLB or
+kube-vip; a constrained single-node installation can use `hostNetwork` after
+verifying that port 53 is free. Prefer an upstream conditional forward for
+`clawmanager.test` so user devices keep their existing DNS configuration. If no
+upstream DNS exists, distribute the BIND service address through DHCP.
+
+The gateway certificate must include `*.clawmanager.test`. Sign it with the
+offline installation CA and distribute that CA through the installation package
+or device-management policy. The wildcard DNS record and wildcard certificate
+mean that creating or deleting an instance requires no DNS or certificate
+change.
+
+### Apply And Verify
+
+Set the chosen template on the ClawManager deployment. Updating a Deployment
+environment variable triggers a rollout:
+
+```bash
+kubectl -n clawmanager-system set env deployment/clawmanager-app \
+  'CLAWMANAGER_OPENCODE_PUBLIC_URL_TEMPLATE=https://opencode-{instance_id}.clawmanager.test:39443/'
+kubectl -n clawmanager-system rollout status deployment/clawmanager-app
+```
+
+Verify DNS and TLS from a user device before creating an OpenCode instance:
+
+```bash
+nslookup opencode-123.clawmanager.test
+curl -I https://opencode-123.clawmanager.test:39443/
+```
+
+The DNS result must be the ClawManager gateway IP and TLS hostname validation
+must succeed. Existing OpenCode instances do not need to be recreated; their
+access links are generated from the current environment setting when access is
+requested. An empty or invalid template falls back to the legacy path proxy,
+which is not compatible with current OpenCode root-relative web assets and
+should be treated as a deployment error when OpenCode Lite is enabled.
+
 ## Storage Profiles
 
 ### Single-Node

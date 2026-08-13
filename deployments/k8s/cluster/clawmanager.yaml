@@ -6195,6 +6195,11 @@ spec:
               value: "redis://clawmanager-redis.clawmanager-system.svc.cluster.local:6379/0"
             - name: CLAWMANAGER_DESKTOP_DIRECT_PROXY
               value: "true"
+            # Required for the OpenCode Lite root-origin UI. Set this at
+            # deployment time to either a nip.io or offline-DNS URL template;
+            # see docs/deployment.md. The {instance_id} placeholder is required.
+            - name: CLAWMANAGER_OPENCODE_PUBLIC_URL_TEMPLATE
+              value: ""
             - name: CLAWMANAGER_TEAM_REDIS_URL
               value: "redis://clawmanager-redis.clawmanager-system.svc.cluster.local:6379/0"
             - name: CLAWMANAGER_TEAM_MANAGER_BASE_URL
@@ -6399,6 +6404,102 @@ spec:
               value: "20299"
             - name: HERMES_TUI_DIR
               value: /usr/local/lib/hermes-agent/ui-tui
+            - name: CLAWMANAGER_AGENT_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: clawmanager-secrets
+                  key: runtime-agent-control-token
+            - name: CLAWMANAGER_AGENT_REPORT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: clawmanager-secrets
+                  key: runtime-agent-report-token
+            - name: RUNTIME_WORKSPACE_ROOT
+              value: /workspaces
+            - name: RUNTIME_AGENT_LISTEN_ADDR
+              value: "0.0.0.0:19090"
+            - name: RUNTIME_AGENT_PUBLIC_PORT
+              value: "19090"
+            - name: RUNTIME_GATEWAY_PORT_START
+              value: "20000"
+            - name: RUNTIME_GATEWAY_PORT_END
+              value: "20299"
+            - name: RUNTIME_AGENT_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: clawmanager-secrets
+                  key: runtime-agent-control-token
+            - name: RUNTIME_AGENT_REPORT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: clawmanager-secrets
+                  key: runtime-agent-report-token
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: agent
+              containerPort: 19090
+          volumeMounts:
+            - name: workspaces
+              mountPath: /workspaces
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: clawmanager-workspaces
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencode-runtime
+  namespace: clawmanager-system
+  labels:
+    app: opencode-runtime
+    clawmanager.io/runtime-type: opencode
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opencode-runtime
+      clawmanager.io/runtime-type: opencode
+  template:
+    metadata:
+      labels:
+        app: opencode-runtime
+        clawmanager.io/runtime-type: opencode
+    spec:
+      containers:
+        - name: runtime
+          image: ghcr.io/yuan-lab-llm/agentsruntime/opencode-lite:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLAWMANAGER_RUNTIME_TYPE
+              value: opencode
+            - name: CLAWMANAGER_BACKEND_URL
+              value: "http://clawmanager-gateway.clawmanager-system.svc.cluster.local:9001"
+            - name: CLAWMANAGER_RUNTIME_DEPLOYMENT_NAME
+              value: opencode-runtime
+            - name: CLAWMANAGER_RUNTIME_IMAGE_REF
+              value: ghcr.io/yuan-lab-llm/agentsruntime/opencode-lite:latest
+            - name: CLAWMANAGER_AGENT_PORT
+              value: "19090"
+            - name: CLAWMANAGER_GATEWAY_PORT_START
+              value: "20000"
+            - name: CLAWMANAGER_GATEWAY_PORT_END
+              value: "20299"
             - name: CLAWMANAGER_AGENT_CONTROL_TOKEN
               valueFrom:
                 secretKeyRef:

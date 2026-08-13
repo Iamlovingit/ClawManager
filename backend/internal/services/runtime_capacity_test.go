@@ -3,12 +3,12 @@ package services
 import "testing"
 
 func TestNormalizeV2RuntimeTypeAcceptsManagedRuntimeTypes(t *testing.T) {
-	for _, input := range []string{"openclaw", " OpenClaw ", "hermes", "Hermes"} {
+	for _, input := range []string{"openclaw", " OpenClaw ", "hermes", "Hermes", "opencode", "OpenCode"} {
 		got, ok := NormalizeV2RuntimeType(input)
 		if !ok {
 			t.Fatalf("expected %q to be accepted", input)
 		}
-		if got != RuntimeTypeOpenClaw && got != RuntimeTypeHermes {
+		if got != RuntimeTypeOpenClaw && got != RuntimeTypeHermes && got != RuntimeTypeOpenCode {
 			t.Fatalf("expected normalized managed runtime type, got %q", got)
 		}
 	}
@@ -64,6 +64,21 @@ func TestRuntimeGatewayPortBlockSizeUsesSinglePortForHermes(t *testing.T) {
 	}
 	if got, want := RuntimeGatewayPortBlockSize("unknown"), RuntimeOpenClawPortsPerInstance; got != want {
 		t.Fatalf("unknown runtime gateway port block size = %d, want safe default %d", got, want)
+	}
+}
+
+func TestRuntimeGatewayPortBlockSizeUsesSinglePortForOpenCode(t *testing.T) {
+	if got, want := RuntimeGatewayPortBlockSize(RuntimeTypeOpenCode), 1; got != want {
+		t.Fatalf("OpenCode gateway port block size = %d, want %d", got, want)
+	}
+}
+
+func TestOpenCodeOnlySupportsLiteMode(t *testing.T) {
+	if err := validateInstanceTypeMode(RuntimeTypeOpenCode, InstanceModeLite); err != nil {
+		t.Fatalf("OpenCode Lite mode rejected: %v", err)
+	}
+	if err := validateInstanceTypeMode(RuntimeTypeOpenCode, InstanceModePro); err == nil {
+		t.Fatal("OpenCode Pro mode must be rejected")
 	}
 }
 

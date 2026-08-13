@@ -11,6 +11,7 @@ import (
 
 var orderedSystemImageTypes = []string{
 	"openclaw",
+	"opencode",
 	"ubuntu",
 	"webtop",
 	"hermes",
@@ -22,6 +23,7 @@ var orderedSystemImageTypes = []string{
 
 var supportedSystemImageTypes = map[string]string{
 	"openclaw":  "OpenClaw Pro",
+	"opencode":  "OpenCode Lite",
 	"ubuntu":    "Ubuntu Desktop",
 	"webtop":    "Webtop Desktop",
 	"hermes":    "Hermes Pro",
@@ -44,6 +46,7 @@ var defaultSystemImageSettings = map[string]string{
 
 var defaultGatewaySystemImageSettings = map[string]string{
 	"openclaw": "ghcr.io/yuan-lab-llm/agentsruntime/openclaw-lite:latest",
+	"opencode": "ghcr.io/yuan-lab-llm/agentsruntime/opencode-lite:latest",
 	"ubuntu":   "ubuntu:22.04",
 	"webtop":   "ubuntu:22.04",
 	"hermes":   "ghcr.io/yuan-lab-llm/agentsruntime/hermes-lite:latest",
@@ -62,6 +65,7 @@ var defaultEnabledSystemImageTypes = map[string]bool{
 var defaultEnabledGatewaySystemImageTypes = map[string]bool{
 	"openclaw": true,
 	"hermes":   true,
+	"opencode": true,
 }
 
 // RuntimeImageConfig is the runtime card selected for an instance type.
@@ -211,13 +215,13 @@ func (s *systemImageSettingService) disableTypeWithFallback(instanceType string)
 		return err
 	}
 
-	return s.repo.Save(&models.SystemImageSetting{
-		InstanceType: instanceType,
-		RuntimeType:  "desktop",
-		DisplayName:  displayNameForSystemImagePreset(instanceType, "desktop"),
-		Image:        defaultSystemImageSettings[instanceType],
-		IsEnabled:    false,
-	})
+	presets := defaultSystemImagePresetsForType(instanceType)
+	if len(presets) == 0 {
+		return errors.New("no default image is configured for instance type")
+	}
+	fallback := presets[0]
+	fallback.IsEnabled = false
+	return s.repo.Save(&fallback)
 }
 
 func (s *systemImageSettingService) GetRuntimeImage(instanceType string) (RuntimeImageConfig, bool) {
@@ -319,17 +323,23 @@ func displayNameForSystemImagePreset(instanceType, runtimeType string) string {
 		}
 		return "Hermes Pro"
 	}
+	if instanceType == "opencode" {
+		return "OpenCode Lite"
+	}
 	return displayNameForSystemImageType(instanceType)
 }
 
 func defaultSystemImagePresetsForType(instanceType string) []models.SystemImageSetting {
-	settings := []models.SystemImageSetting{{
-		InstanceType: instanceType,
-		RuntimeType:  "desktop",
-		DisplayName:  displayNameForSystemImagePreset(instanceType, "desktop"),
-		Image:        defaultSystemImageSettings[instanceType],
-		IsEnabled:    defaultEnabledSystemImageTypes[instanceType],
-	}}
+	settings := make([]models.SystemImageSetting, 0, 2)
+	if image := strings.TrimSpace(defaultSystemImageSettings[instanceType]); image != "" {
+		settings = append(settings, models.SystemImageSetting{
+			InstanceType: instanceType,
+			RuntimeType:  "desktop",
+			DisplayName:  displayNameForSystemImagePreset(instanceType, "desktop"),
+			Image:        image,
+			IsEnabled:    defaultEnabledSystemImageTypes[instanceType],
+		})
+	}
 
 	if image := strings.TrimSpace(defaultGatewaySystemImageSettings[instanceType]); image != "" {
 		if defaultEnabledGatewaySystemImageTypes[instanceType] {

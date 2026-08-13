@@ -9,6 +9,7 @@ import (
 const (
 	RuntimeTypeOpenClaw = "openclaw"
 	RuntimeTypeHermes   = "hermes"
+	RuntimeTypeOpenCode = "opencode"
 
 	InstanceModeLite = "lite"
 	InstanceModePro  = "pro"
@@ -26,6 +27,7 @@ const (
 	RuntimeBrowserControlPortOffset = 2
 	RuntimeOpenClawPortsPerInstance = RuntimeBrowserControlPortOffset + 1
 	RuntimeHermesPortsPerInstance   = 1
+	RuntimeOpenCodePortsPerInstance = 1
 	// Keep the shared range large enough for the runtime with the largest port
 	// block. Runtime-specific allocation still stops at the Pod slot capacity.
 	RuntimeGatewayPortEnd = RuntimeGatewayPortStart + RuntimePodCapacity*RuntimeOpenClawPortsPerInstance - 1
@@ -33,8 +35,13 @@ const (
 )
 
 func RuntimeGatewayPortBlockSize(runtimeType string) int {
-	if normalized, ok := NormalizeV2RuntimeType(runtimeType); ok && normalized == RuntimeTypeHermes {
-		return RuntimeHermesPortsPerInstance
+	if normalized, ok := NormalizeV2RuntimeType(runtimeType); ok {
+		switch normalized {
+		case RuntimeTypeHermes:
+			return RuntimeHermesPortsPerInstance
+		case RuntimeTypeOpenCode:
+			return RuntimeOpenCodePortsPerInstance
+		}
 	}
 	return RuntimeOpenClawPortsPerInstance
 }
@@ -45,6 +52,8 @@ func NormalizeV2RuntimeType(instanceType string) (string, bool) {
 		return RuntimeTypeOpenClaw, true
 	case RuntimeTypeHermes:
 		return RuntimeTypeHermes, true
+	case RuntimeTypeOpenCode:
+		return RuntimeTypeOpenCode, true
 	default:
 		return "", false
 	}

@@ -448,6 +448,20 @@ func TestLiteRuntimePersistentAncestorsIncludeOpenClawHome(t *testing.T) {
 	}
 }
 
+func TestLiteRuntimePersistentRootUsesOpenCodeConfigDirectory(t *testing.T) {
+	workspacePath := filepath.Join(t.TempDir(), "opencode", "user-1", "instance-90")
+	instance := &models.Instance{
+		Type:          RuntimeTypeOpenCode,
+		RuntimeType:   RuntimeBackendGateway,
+		InstanceMode:  InstanceModeLite,
+		WorkspacePath: &workspacePath,
+	}
+	want := filepath.Join(workspacePath, "home", ".config", "opencode")
+	if got := liteRuntimePersistentRoot(instance); got != want {
+		t.Fatalf("OpenCode persistent root = %q, want %q", got, want)
+	}
+}
+
 type fakeObjectStorage map[string][]byte
 
 func (f fakeObjectStorage) PutObject(context.Context, string, []byte, string) error {

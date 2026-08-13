@@ -21,8 +21,11 @@ func runtimeSkillInstallRoot(instance *models.Instance) string {
 	}
 	workspacePath := filepath.Clean(strings.TrimSpace(*instance.WorkspacePath))
 	if isLiteRuntimeInstance(instance) {
-		if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeHermes) {
+		switch strings.ToLower(strings.TrimSpace(instance.Type)) {
+		case RuntimeTypeHermes:
 			return filepath.Join(workspacePath, "home", ".hermes", "skills")
+		case RuntimeTypeOpenCode:
+			return filepath.Join(workspacePath, "home", ".config", "opencode", "skills")
 		}
 		return filepath.Join(workspacePath, "home", ".openclaw", "workspace", "skills")
 	}

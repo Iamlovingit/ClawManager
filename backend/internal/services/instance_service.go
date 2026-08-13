@@ -63,6 +63,9 @@ func (s *instanceService) ValidateCreateRequests(userID int, requests []CreateIn
 		if _, ok := normalizeDesktopStreamProfile(requests[idx].DesktopStreamProfile); !ok {
 			return fmt.Errorf("invalid desktop stream profile")
 		}
+		if err := validateInstanceTypeMode(requests[idx].Type, resolveCreateInstanceMode(requests[idx])); err != nil {
+			return err
+		}
 	}
 
 	quota, err := s.quotaRepo.GetByUserID(userID)
@@ -169,7 +172,7 @@ func (s *instanceService) ValidateCreateRequests(userID int, requests []CreateIn
 type CreateInstanceRequest struct {
 	Name                 string              `json:"name" validate:"required,min=3,max=50"`
 	Description          *string             `json:"description,omitempty"`
-	Type                 string              `json:"type" validate:"required,oneof=openclaw ubuntu debian centos custom webtop hermes workbuddy"`
+	Type                 string              `json:"type" validate:"required,oneof=openclaw ubuntu debian centos custom webtop hermes workbuddy opencode"`
 	Mode                 string              `json:"mode" validate:"omitempty,oneof=lite pro"`
 	InstanceMode         string              `json:"instance_mode" validate:"omitempty,oneof=lite pro"`
 	RuntimeType          string              `json:"runtime_type" validate:"omitempty,oneof=gateway desktop shell"`
@@ -339,6 +342,9 @@ func (s *instanceService) create(userID int, req CreateInstanceRequest, validate
 	}
 
 	instanceMode := resolveCreateInstanceMode(req)
+	if err := validateInstanceTypeMode(req.Type, instanceMode); err != nil {
+		return nil, err
+	}
 	modeRuntimeType, _ := RuntimeTypeForInstanceMode(instanceMode)
 	if !hasExplicitCreateInstanceMode(req) && normalizeInstanceRuntimeType(req.RuntimeType) == RuntimeBackendShell {
 		modeRuntimeType = RuntimeBackendShell
@@ -1234,7 +1240,7 @@ func (s *instanceService) buildAgentEnv(instance *models.Instance) (map[string]s
 
 func supportsManagedRuntimeIntegration(instanceType string) bool {
 	switch strings.ToLower(strings.TrimSpace(instanceType)) {
-	case "openclaw", "hermes", "workbuddy":
+	case "openclaw", "hermes", "workbuddy", "opencode":
 		return true
 	default:
 		return false
@@ -1294,6 +1300,9 @@ func managedRuntimePersistentDir(instance *models.Instance) string {
 		workspacePath := strings.TrimSpace(*instance.WorkspacePath)
 		if strings.EqualFold(instance.Type, "hermes") {
 			return path.Join(workspacePath, "home", ".hermes")
+		}
+		if strings.EqualFold(instance.Type, RuntimeTypeOpenCode) {
+			return path.Join(workspacePath, "home", ".config", "opencode")
 		}
 		return path.Join(workspacePath, "home", ".openclaw")
 	}
@@ -2311,6 +2320,13 @@ func resolveCreateInstanceMode(req CreateInstanceRequest) string {
 		return InstanceModeLite
 	}
 	return InstanceModeForRuntimeType(normalizeInstanceRuntimeType(req.RuntimeType))
+}
+
+func validateInstanceTypeMode(instanceType, mode string) error {
+	if strings.EqualFold(strings.TrimSpace(instanceType), RuntimeTypeOpenCode) && mode != InstanceModeLite {
+		return fmt.Errorf("opencode only supports lite instance mode")
+	}
+	return nil
 }
 
 func hasExplicitCreateInstanceMode(req CreateInstanceRequest) bool {

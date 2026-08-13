@@ -153,6 +153,24 @@ func TestRuntimeSkillInstallRootOpenClawAndHermes(t *testing.T) {
 	}
 }
 
+func TestRuntimeSkillInstallRootOpenCodeLite(t *testing.T) {
+	workspace := "/workspaces/opencode/user-45/instance-91"
+	opencode := &models.Instance{
+		Type:          RuntimeTypeOpenCode,
+		RuntimeType:   RuntimeBackendGateway,
+		InstanceMode:  InstanceModeLite,
+		WorkspacePath: &workspace,
+	}
+
+	want := filepath.Join(workspace, "home", ".config", "opencode", "skills")
+	if got := runtimeSkillInstallRoot(opencode); got != want {
+		t.Fatalf("OpenCode skill root = %q, want %q", got, want)
+	}
+	if !SupportsServerWorkspaceSkillScan(opencode) {
+		t.Fatal("OpenCode Lite must support workspace skill scanning")
+	}
+}
+
 func TestResolveInstanceSkillSourceTypePreservesInjected(t *testing.T) {
 	existing := &models.InstanceSkill{SourceType: "injected_by_clawmanager"}
 	skill := &models.Skill{SourceType: skillSourceUploaded}
@@ -234,22 +252,22 @@ func TestSyncAgentSkillsPreservesInjectedProvenanceAfterWorkspaceScan(t *testing
 	stub := &provenanceCaptureRepoStub{
 		capturingSkillRepoStub: capturingSkillRepoStub{
 			skillRepoStub: skillRepoStub{
-			skills: map[int]*models.Skill{
-				10: {
-					ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
-					SourceType: skillSourceUploaded, Status: skillStatusActive,
-					Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+				skills: map[int]*models.Skill{
+					10: {
+						ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
+						SourceType: skillSourceUploaded, Status: skillStatusActive,
+						Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+					},
 				},
-			},
-			blobs: map[int]*models.SkillBlob{
-				1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
-			},
-			versions: map[int]*models.SkillVersion{
-				1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
-			},
-			instanceSkills: []models.InstanceSkill{
-				{InstanceID: 1, SkillID: 10, SourceType: "injected_by_clawmanager", Status: "active"},
-			},
+				blobs: map[int]*models.SkillBlob{
+					1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
+				},
+				versions: map[int]*models.SkillVersion{
+					1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
+				},
+				instanceSkills: []models.InstanceSkill{
+					{InstanceID: 1, SkillID: 10, SourceType: "injected_by_clawmanager", Status: "active"},
+				},
 			},
 		},
 	}
@@ -283,19 +301,19 @@ func TestSyncAgentSkillsReusesUploadedSkillOnWorkspaceScan(t *testing.T) {
 	stub := &provenanceCaptureRepoStub{
 		capturingSkillRepoStub: capturingSkillRepoStub{
 			skillRepoStub: skillRepoStub{
-			skills: map[int]*models.Skill{
-				10: {
-					ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
-					SourceType: skillSourceUploaded, Status: skillStatusActive,
-					Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+				skills: map[int]*models.Skill{
+					10: {
+						ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
+						SourceType: skillSourceUploaded, Status: skillStatusActive,
+						Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+					},
 				},
-			},
-			blobs: map[int]*models.SkillBlob{
-				1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
-			},
-			versions: map[int]*models.SkillVersion{
-				1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
-			},
+				blobs: map[int]*models.SkillBlob{
+					1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
+				},
+				versions: map[int]*models.SkillVersion{
+					1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
+				},
 			},
 		},
 	}
@@ -408,9 +426,9 @@ func TestRequestLiteSkillInventorySyncUsesIncrementalWhenAgentResyncFollows(t *t
 	}}
 
 	svc := &skillService{
-		repo:         stub,
-		instanceRepo: instRepo,
-		commandRepo:  cmdRepo,
+		repo:           stub,
+		instanceRepo:   instRepo,
+		commandRepo:    cmdRepo,
 		commandService: &noopInstanceCommandService{},
 	}
 	svc.ConfigureRuntimeSkillSync(bindingRepo, podRepo, agent)

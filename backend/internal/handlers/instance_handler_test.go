@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -714,6 +715,67 @@ func TestProxyAccessTokenRejectsRuntimeQueryTokenWithoutCookie(t *testing.T) {
 	}
 }
 
+func TestProxyAccessTokenBootstrapsDedicatedOpenCodeOriginCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	accessService := services.NewInstanceAccessService()
+	defer accessService.Stop()
+	token, err := accessService.GenerateToken(
+		1,
+		171,
+		"opencode",
+		"https://opencode-171.runtime.example.test/",
+		"",
+		20000,
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GenerateToken returned error: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	requestURL := "/api/v1/instances/171/proxy/?token=" + url.QueryEscape(token.Token) + "&token=runtime-session&view=compact"
+	c.Request = httptest.NewRequest(http.MethodGet, requestURL, nil)
+	c.Request.Header.Set(dedicatedRuntimeOriginHeader, "opencode")
+
+	handler := &InstanceHandler{accessService: accessService}
+	if got, ok := handler.proxyAccessToken(c, 171); ok || got != "" {
+		t.Fatalf("proxyAccessToken = %q/%v, want redirect after cookie bootstrap", got, ok)
+	}
+	if recorder.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusTemporaryRedirect)
+	}
+	if got := recorder.Header().Get("Location"); got != "/?token=runtime-session&view=compact" {
+		t.Fatalf("Location = %q", got)
+	}
+	setCookie := recorder.Header().Get("Set-Cookie")
+	for _, want := range []string{
+		"instance_access_171=",
+		"Path=/",
+		"HttpOnly",
+		"Secure",
+		"SameSite=None",
+	} {
+		if !strings.Contains(setCookie, want) {
+			t.Fatalf("Set-Cookie missing %q: %s", want, setCookie)
+		}
+	}
+	if strings.Contains(recorder.Header().Get("Location"), token.Token) {
+		t.Fatal("redirect leaked the ClawManager access token")
+	}
+}
+
+func TestDedicatedRuntimeCleanLocationUsesRootPath(t *testing.T) {
+	requestURL, err := url.Parse("/api/v1/instances/171/proxy/assets/app.js?token=access&lang=zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := dedicatedRuntimeCleanLocation(requestURL, 171, "access")
+	if want := "/assets/app.js?lang=zh-CN"; got != want {
+		t.Fatalf("dedicatedRuntimeCleanLocation() = %q, want %q", got, want)
+	}
+}
+
 func TestBuildLiteBatchCreateRequestsDefaultsToGatewayLite(t *testing.T) {
 	requests, handlerRequests, err := buildLiteBatchCreateRequests(BatchCreateLiteInstancesRequest{
 		NamePrefix: "batch-lite",
@@ -732,6 +794,24 @@ func TestBuildLiteBatchCreateRequestsDefaultsToGatewayLite(t *testing.T) {
 		if req.Type != "openclaw" || req.OSType != "openclaw" || req.OSVersion != "latest" {
 			t.Fatalf("request %d defaults = type %q os %q version %q", idx, req.Type, req.OSType, req.OSVersion)
 		}
+	}
+}
+
+func TestBuildLiteBatchCreateRequestsAcceptsOpenCode(t *testing.T) {
+	requests, _, err := buildLiteBatchCreateRequests(BatchCreateLiteInstancesRequest{
+		NamePrefix: "batch-opencode",
+		Count:      1,
+		Template:   &BatchCreateLiteInstanceTemplate{Type: "opencode"},
+	})
+	if err != nil {
+		t.Fatalf("buildLiteBatchCreateRequests returned error: %v", err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	request := requests[0]
+	if request.Type != "opencode" || request.OSType != "opencode" || request.RuntimeType != services.RuntimeBackendGateway || request.InstanceMode != services.InstanceModeLite {
+		t.Fatalf("OpenCode request was not normalized as Lite: %#v", request)
 	}
 }
 

@@ -104,7 +104,13 @@ function availabilityClass(availability: InstanceAvailability) {
 }
 
 function typeLabel(type: string) {
-  return type === "hermes" ? "Hermes" : type === "openclaw" ? "OpenClaw" : type;
+  return type === "hermes"
+    ? "Hermes"
+    : type === "openclaw"
+      ? "OpenClaw"
+      : type === "opencode"
+        ? "OpenCode"
+        : type;
 }
 
 function formatBytes(value?: number) {
@@ -126,6 +132,7 @@ function supportsWorkspace(instance: Instance) {
     instance.type === "openclaw" ||
     instance.type === "hermes" ||
     instance.type === "workbuddy" ||
+    instance.type === "opencode" ||
     Boolean(instance.workspace_path)
   );
 }

@@ -42,6 +42,8 @@ const (
 // instance instead of relaying it through this control-plane process.
 const desktopDirectProxyEnv = "CLAWMANAGER_DESKTOP_DIRECT_PROXY"
 
+const dedicatedRuntimeOriginHeader = "X-ClawManager-Runtime-Origin"
+
 // desktopDirectProxyEnabled reports whether direct desktop proxying is enabled.
 func desktopDirectProxyEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(desktopDirectProxyEnv))) {
@@ -204,7 +206,7 @@ type ExternalAccessRequest struct {
 type CreateInstanceRequest struct {
 	Name                 string                       `json:"name" binding:"required,min=3,max=50"`
 	Description          *string                      `json:"description,omitempty"`
-	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes workbuddy"`
+	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes workbuddy opencode"`
 	Mode                 string                       `json:"mode" binding:"omitempty,oneof=lite pro"`
 	InstanceMode         string                       `json:"instance_mode" binding:"omitempty,oneof=lite pro"`
 	RuntimeType          string                       `json:"runtime_type" binding:"omitempty,oneof=gateway desktop shell"`
@@ -581,8 +583,8 @@ func buildLiteBatchCreateRequests(req BatchCreateLiteInstancesRequest) ([]servic
 	if template.Type == "" {
 		template.Type = "openclaw"
 	}
-	if template.Type != "openclaw" && template.Type != "hermes" {
-		return nil, nil, fmt.Errorf("lite batch create supports openclaw or hermes instances")
+	if template.Type != "openclaw" && template.Type != "hermes" && template.Type != "opencode" {
+		return nil, nil, fmt.Errorf("lite batch create supports openclaw, hermes, or opencode instances")
 	}
 	if template.CPUCores <= 0 {
 		template.CPUCores = 2
@@ -1133,7 +1135,7 @@ func (h *InstanceHandler) GetRuntimeDetails(c *gin.Context) {
 		Commands: commands,
 	}
 	if h.aiObservabilityService != nil && instance != nil &&
-		(instance.Type == "openclaw" || instance.Type == "hermes") {
+		(instance.Type == "openclaw" || instance.Type == "hermes" || instance.Type == "opencode") {
 		var systemInfo map[string]interface{}
 		if runtime != nil {
 			systemInfo = runtime.SystemInfo
@@ -1498,10 +1500,19 @@ func (h *InstanceHandler) GenerateAccessToken(c *gin.Context) {
 	)
 
 	// Return token and URLs
+	proxyURL := h.proxyService.GetProxyURLForInstance(instance, token.Token)
+	responseAccessURL := accessURL
+	if parsedAccessURL, parseErr := url.Parse(accessURL); parseErr == nil && parsedAccessURL.IsAbs() {
+		// A dedicated runtime origin cannot reuse the host-only cookie created by
+		// this API response. Bootstrap that origin with the signed query token;
+		// the runtime-origin proxy immediately promotes it to a root cookie and
+		// redirects to a clean URL.
+		responseAccessURL = proxyURL
+	}
 	response := map[string]interface{}{
 		"token":                    token.Token,
-		"access_url":               accessURL,
-		"proxy_url":                h.proxyService.GetProxyURLForInstance(instance, token.Token),
+		"access_url":               responseAccessURL,
+		"proxy_url":                proxyURL,
 		"expires_at":               token.ExpiresAt,
 		"desktop_proxy_mode":       desktopProxyMode(directProxyEnabled, upstream),
 		"desktop_upstream_present": upstream != "",
@@ -1644,16 +1655,61 @@ func (h *InstanceHandler) proxyAccessToken(c *gin.Context, id int) (string, bool
 
 	// Promote only a validated ClawManager access token. Runtime applications may
 	// also use a token query parameter for their own websocket/session protocol.
+	cookiePath := fmt.Sprintf("/api/v1/instances/%d/proxy", id)
+	cookieSecure := false
+	dedicatedOrigin := strings.EqualFold(strings.TrimSpace(c.GetHeader(dedicatedRuntimeOriginHeader)), "opencode")
+	if dedicatedOrigin {
+		cookiePath = "/"
+		cookieSecure = true
+		c.SetSameSite(http.SameSiteNoneMode)
+	}
 	c.SetCookie(
 		cookieName,
 		queryToken,
 		int(time.Hour.Seconds()),
-		fmt.Sprintf("/api/v1/instances/%d/proxy", id),
+		cookiePath,
 		"",
-		false,
+		cookieSecure,
 		true,
 	)
+	if dedicatedOrigin && (c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) {
+		c.Redirect(http.StatusTemporaryRedirect, dedicatedRuntimeCleanLocation(c.Request.URL, id, queryToken))
+		return "", false
+	}
 	return queryToken, true
+}
+
+func dedicatedRuntimeCleanLocation(requestURL *url.URL, instanceID int, accessToken string) string {
+	if requestURL == nil {
+		return "/"
+	}
+	prefix := fmt.Sprintf("/api/v1/instances/%d/proxy", instanceID)
+	pathValue := strings.TrimPrefix(requestURL.Path, prefix)
+	if pathValue == "" {
+		pathValue = "/"
+	} else if !strings.HasPrefix(pathValue, "/") {
+		pathValue = "/" + pathValue
+	}
+
+	query := requestURL.Query()
+	values := query["token"]
+	if len(values) > 0 {
+		kept := values[:0]
+		for _, value := range values {
+			if value != accessToken {
+				kept = append(kept, value)
+			}
+		}
+		if len(kept) == 0 {
+			query.Del("token")
+		} else {
+			query["token"] = kept
+		}
+	}
+	if encoded := query.Encode(); encoded != "" {
+		return pathValue + "?" + encoded
+	}
+	return pathValue
 }
 
 func (h *InstanceHandler) proxyInstanceWithToken(c *gin.Context, id int, token string) {
@@ -1888,8 +1944,8 @@ func (h *InstanceHandler) RefreshInstanceSkills(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if instance.Type != "openclaw" && instance.Type != "hermes" {
-		utils.Error(c, http.StatusBadRequest, "skill inventory sync is only available for openclaw and hermes instances")
+	if instance.Type != "openclaw" && instance.Type != "hermes" && instance.Type != "opencode" {
+		utils.Error(c, http.StatusBadRequest, "skill inventory sync is only available for managed runtime instances")
 		return
 	}
 	userID, _ := c.Get("userID")

@@ -84,6 +84,105 @@ func TestInstanceProxyServiceUsesRuntimeBindingForV2(t *testing.T) {
 	}
 }
 
+func TestInstanceProxyServiceInjectsBasicAuthForOpenCodeLite(t *testing.T) {
+	instanceToken := "igt_opencode_instance"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "opencode" || password != instanceToken {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Secure Area"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if got := r.Header.Get("X-ClawManager-Instance-Token"); got != instanceToken {
+			t.Fatalf("X-ClawManager-Instance-Token = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	service, token := newOpenCodeV2ProxyTestService(t, upstream.URL, 128, instanceToken)
+	service.httpClient = upstream.Client()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/128/proxy/?token="+url.QueryEscape(token.Token), nil)
+	rec := httptest.NewRecorder()
+
+	if err := service.ProxyRequest(req.Context(), 128, token.Token, rec, req); err != nil {
+		t.Fatalf("ProxyRequest returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Fatalf("unexpected proxy response %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInstanceProxyServiceSuppressesOpenCodeBasicChallenge(t *testing.T) {
+	instanceToken := "igt_opencode_instance"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Secure Area"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	service, token := newOpenCodeV2ProxyTestService(t, upstream.URL, 130, instanceToken)
+	service.httpClient = upstream.Client()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/130/proxy/?token="+url.QueryEscape(token.Token), nil)
+	rec := httptest.NewRecorder()
+
+	if err := service.ProxyRequest(req.Context(), 130, token.Token, rec, req); err != nil {
+		t.Fatalf("ProxyRequest returned error: %v", err)
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+		t.Fatalf("WWW-Authenticate = %q, want empty", got)
+	}
+}
+
+func TestInstanceProxyServiceLeavesDedicatedOpenCodeOriginAtRoot(t *testing.T) {
+	instanceToken := "igt_opencode_instance"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "opencode" || password != instanceToken {
+			t.Fatalf("BasicAuth = %q/%q/%v", username, password, ok)
+		}
+		if r.URL.Path == "/redirect" {
+			w.Header().Set("Location", "/session/next")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><head><script src="/assets/app.js"></script></head><body></body></html>`))
+	}))
+	defer upstream.Close()
+
+	service, token := newOpenCodeV2ProxyTestService(t, upstream.URL, 134, instanceToken)
+	client := upstream.Client()
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	service.httpClient = client
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/134/proxy/?token="+url.QueryEscape(token.Token), nil)
+	req.Header.Set("X-ClawManager-Runtime-Origin", "opencode")
+	rec := httptest.NewRecorder()
+	if err := service.ProxyRequest(req.Context(), 134, token.Token, rec, req); err != nil {
+		t.Fatalf("ProxyRequest returned error: %v", err)
+	}
+	if strings.Contains(rec.Body.String(), "<base ") {
+		t.Fatalf("dedicated-origin HTML unexpectedly contains proxy base: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/instances/134/proxy/redirect?token="+url.QueryEscape(token.Token), nil)
+	req.Header.Set("X-ClawManager-Runtime-Origin", "opencode")
+	rec = httptest.NewRecorder()
+	if err := service.ProxyRequest(req.Context(), 134, token.Token, rec, req); err != nil {
+		t.Fatalf("redirect ProxyRequest returned error: %v", err)
+	}
+	if got := rec.Header().Get("Location"); got != "/session/next" {
+		t.Fatalf("Location = %q, want root-origin redirect", got)
+	}
+}
+
 func TestInstanceProxyServiceInjectsInstanceTokenForHermesLite(t *testing.T) {
 	instanceToken := "igt_hermes_instance"
 	var loginHits int
@@ -685,6 +784,55 @@ func TestInstanceProxyServiceProxiesHermesLiteWebSocket(t *testing.T) {
 	}
 }
 
+func TestInstanceProxyServiceProxiesOpenCodeLiteWebSocketWithBasicAuth(t *testing.T) {
+	instanceToken := "igt_opencode_instance"
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "opencode" || password != instanceToken {
+			t.Fatalf("BasicAuth = %q/%q/%v", username, password, ok)
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upstream websocket upgrade failed: %v", err)
+		}
+		defer conn.Close()
+		messageType, message, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("upstream websocket read failed: %v", err)
+		}
+		if err := conn.WriteMessage(messageType, message); err != nil {
+			t.Fatalf("upstream websocket write failed: %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	service, token := newOpenCodeV2ProxyTestService(t, upstream.URL, 132, instanceToken)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := service.ProxyWebSocket(r.Context(), 132, token.Token, w, r); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	}))
+	defer proxy.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(proxy.URL, "http") + "/api/v1/instances/132/proxy/ws"
+	clientConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("client websocket dial failed: %v", err)
+	}
+	defer clientConn.Close()
+	if err := clientConn.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {
+		t.Fatalf("client websocket write failed: %v", err)
+	}
+	_, message, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("client websocket read failed: %v", err)
+	}
+	if string(message) != "ping" {
+		t.Fatalf("client websocket message = %q", message)
+	}
+}
+
 func TestInstanceProxyServiceSkipsBearerForHermesTicketWebSocket(t *testing.T) {
 	instanceToken := "igt_hermes_instance"
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -820,6 +968,66 @@ func TestInstanceProxyServiceUsesBaseProxyEntryForV2OpenClaw(t *testing.T) {
 	}, "token+with/slash")
 
 	want := "/api/v1/instances/123/proxy/?token=token%2Bwith%2Fslash"
+	if got != want {
+		t.Fatalf("GetProxyURLForInstance() = %q, want %q", got, want)
+	}
+}
+
+func TestInstanceProxyServiceUsesConfiguredDedicatedOriginForOpenCodeLite(t *testing.T) {
+	tests := []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{
+			name:     "online nip.io DNS",
+			template: "https://opencode-{instance_id}.172-16-1-12.nip.io:39443/",
+			want:     "https://opencode-123.172-16-1-12.nip.io:39443/?token=token%2Bwith%2Fslash",
+		},
+		{
+			name:     "offline BIND DNS",
+			template: "https://opencode-{instance_id}.clawmanager.test:39443/",
+			want:     "https://opencode-123.clawmanager.test:39443/?token=token%2Bwith%2Fslash",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(openCodePublicURLTemplateEnvVar, tt.template)
+			workspacePath := "/workspaces/opencode/user-45/instance-123"
+			accessService := NewInstanceAccessService()
+			t.Cleanup(accessService.Stop)
+			service := NewInstanceProxyService(accessService)
+			got := service.GetProxyURLForInstance(&models.Instance{
+				ID:            123,
+				Type:          RuntimeTypeOpenCode,
+				RuntimeType:   RuntimeBackendGateway,
+				InstanceMode:  InstanceModeLite,
+				WorkspacePath: &workspacePath,
+			}, "token+with/slash")
+
+			if got != tt.want {
+				t.Fatalf("GetProxyURLForInstance() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstanceProxyServiceFallsBackToPathProxyForInvalidOpenCodeOriginTemplate(t *testing.T) {
+	t.Setenv(openCodePublicURLTemplateEnvVar, "https://runtime.example.test/")
+	workspacePath := "/workspaces/opencode/user-45/instance-123"
+	accessService := NewInstanceAccessService()
+	t.Cleanup(accessService.Stop)
+	service := NewInstanceProxyService(accessService)
+	got := service.GetProxyURLForInstance(&models.Instance{
+		ID:            123,
+		Type:          RuntimeTypeOpenCode,
+		RuntimeType:   RuntimeBackendGateway,
+		InstanceMode:  InstanceModeLite,
+		WorkspacePath: &workspacePath,
+	}, "token")
+
+	want := "/api/v1/instances/123/proxy/?token=token"
 	if got != want {
 		t.Fatalf("GetProxyURLForInstance() = %q, want %q", got, want)
 	}
@@ -1021,6 +1229,38 @@ func newV2ProxyTestService(t *testing.T, instanceRepo repository.InstanceReposit
 	service.bindingRepo = bindingRepo
 	service.runtimePodRepo = podRepo
 	return service, token
+}
+
+func newOpenCodeV2ProxyTestService(t *testing.T, upstreamURL string, instanceID int, instanceToken string) (*InstanceProxyService, *AccessToken) {
+	t.Helper()
+	podIP, gatewayPort := splitURLHostPortForProxyTest(t, upstreamURL)
+	workspacePath := "/workspaces/opencode/user-45/instance-" + strconv.Itoa(instanceID)
+	instanceRepo := newV2LifecycleInstanceRepo()
+	instanceRepo.byID[instanceID] = &models.Instance{
+		ID:                instanceID,
+		UserID:            45,
+		Type:              RuntimeTypeOpenCode,
+		RuntimeType:       "gateway",
+		InstanceMode:      InstanceModeLite,
+		Status:            "running",
+		AccessToken:       &instanceToken,
+		WorkspacePath:     &workspacePath,
+		RuntimeGeneration: 1,
+	}
+	bindingRepo := newFakeRuntimeBindingRepo()
+	bindingRepo.bindings[instanceID] = &models.InstanceRuntimeBinding{
+		InstanceID:   instanceID,
+		RuntimePodID: int64(instanceID),
+		GatewayPort:  gatewayPort,
+		State:        "running",
+		Generation:   1,
+	}
+	podRepo := &fakeRuntimePodRepo{
+		pods: map[int64]*models.RuntimePod{
+			int64(instanceID): {ID: int64(instanceID), PodIP: &podIP, State: "ready"},
+		},
+	}
+	return newV2ProxyTestService(t, instanceRepo, bindingRepo, podRepo, 45, instanceID, RuntimeTypeOpenCode)
 }
 
 func splitURLHostPortForProxyTest(t *testing.T, rawURL string) (string, int) {

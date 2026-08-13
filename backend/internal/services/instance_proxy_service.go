@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,7 +59,10 @@ type serviceLookupCall struct {
 	err         error
 }
 
-const defaultServiceCacheTTL = 30 * time.Second
+const (
+	defaultServiceCacheTTL          = 30 * time.Second
+	openCodePublicURLTemplateEnvVar = "CLAWMANAGER_OPENCODE_PUBLIC_URL_TEMPLATE"
+)
 
 var ErrInstanceGatewayUnavailable = errors.New("instance gateway is not available")
 
@@ -133,11 +137,12 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	}
 
 	effectiveRequestPath := canonicalProxyEntryRequestPath(r.URL.Path, accessToken, instanceID)
+	dedicatedOpenCodeOrigin := isDedicatedOpenCodeOriginRequest(r, accessToken.InstanceType)
 
 	// Extract the actual path from the request (remove the proxy prefix)
 	targetPath := s.extractTargetPath(effectiveRequestPath, instanceID, accessToken.InstanceType)
 	targetPort := s.resolveTargetPort(accessToken.InstanceType, accessToken.TargetPort, targetPath)
-	shouldRewriteHTML := s.shouldRewriteHTMLForProxy(instanceID, accessToken.InstanceType)
+	shouldRewriteHTML := s.shouldRewriteHTMLForProxy(instanceID, accessToken.InstanceType) && !dedicatedOpenCodeOrigin
 
 	// Build target URL
 	targetURL, err := s.resolveHTTPProxyTarget(ctx, accessToken, instanceID, targetPort, targetPath, effectiveRequestPath)
@@ -205,7 +210,7 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	proxyReq.Header.Set("X-Forwarded-Proto", requestScheme(r))
 	proxyReq.Header.Set("X-Forwarded-Prefix", proxyPrefix)
 	if !isHermesDashboardPublicAuthPath(bootstrapPath) {
-		setManagedRuntimeGatewayAuthHeaders(proxyReq.Header, managedGatewayToken)
+		setManagedRuntimeGatewayAuthHeaders(proxyReq.Header, managedGatewayToken, accessToken.InstanceType)
 	}
 	if shouldRewriteHTML {
 		proxyReq.Header.Del("Accept-Encoding")
@@ -225,8 +230,15 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-	if location := resp.Header.Get("Location"); location != "" {
+	if location := resp.Header.Get("Location"); location != "" && !dedicatedOpenCodeOrigin {
 		resp.Header.Set("Location", s.rewriteRedirectLocation(instanceID, location))
+	}
+	// OpenCode protects its web server with HTTP Basic auth. ClawManager
+	// authenticates transparently on the upstream request, so never forward an
+	// upstream Basic challenge to the browser; doing so opens a native login
+	// dialog for the ClawManager host instead of returning a normal proxy error.
+	if isOpenCodeRuntimeType(accessToken.InstanceType) {
+		resp.Header.Del("WWW-Authenticate")
 	}
 
 	if shouldRewriteHTML && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
@@ -349,7 +361,7 @@ func (s *InstanceProxyService) ProxyWebSocket(ctx context.Context, instanceID in
 		upstreamHeader.Del("X-ClawManager-Instance-Token")
 		upstreamHeader.Del("X-ClawManager-LLM-API-Key")
 	} else {
-		setManagedRuntimeGatewayAuthHeaders(upstreamHeader, managedGatewayToken)
+		setManagedRuntimeGatewayAuthHeaders(upstreamHeader, managedGatewayToken, accessToken.InstanceType)
 		if managedGatewayToken != "" {
 			upstreamHeader.Set("Origin", s.openClawWebSocketOrigin(targetURL))
 		}
@@ -459,17 +471,33 @@ func (s *InstanceProxyService) removeHopByHopHeaders(header http.Header) {
 	}
 }
 
-func setManagedRuntimeGatewayAuthHeaders(header http.Header, token string) {
+func setManagedRuntimeGatewayAuthHeaders(header http.Header, token, instanceType string) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return
 	}
-	header.Set("Authorization", "Bearer "+token)
+	if isOpenCodeRuntimeType(instanceType) {
+		credentials := base64.StdEncoding.EncodeToString([]byte("opencode:" + token))
+		header.Set("Authorization", "Basic "+credentials)
+	} else {
+		header.Set("Authorization", "Bearer "+token)
+	}
 	header.Set("X-Api-Key", token)
 	header.Set("X-OpenAI-Api-Key", token)
 	header.Set("OpenAI-Api-Key", token)
 	header.Set("X-ClawManager-Instance-Token", token)
 	header.Set("X-ClawManager-LLM-API-Key", token)
+}
+
+func isOpenCodeRuntimeType(instanceType string) bool {
+	runtimeType, managed := NormalizeV2RuntimeType(instanceType)
+	return managed && runtimeType == RuntimeTypeOpenCode
+}
+
+func isDedicatedOpenCodeOriginRequest(r *http.Request, instanceType string) bool {
+	return r != nil &&
+		isOpenCodeRuntimeType(instanceType) &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("X-ClawManager-Runtime-Origin")), RuntimeTypeOpenCode)
 }
 
 func hermesProxyPrefix(instanceID int) string {
@@ -990,10 +1018,40 @@ func (s *InstanceProxyService) GetProxyURLForInstance(instance *models.Instance,
 	if instance == nil {
 		return ""
 	}
+	if runtimeType, ok := v2RuntimeTypeForInstance(instance); ok && runtimeType == RuntimeTypeOpenCode {
+		if publicURL := opencodePublicURL(instance.ID, token); publicURL != "" {
+			return publicURL
+		}
+	}
 	if runtimeType, ok := v2RuntimeTypeForInstance(instance); ok && runtimeType == RuntimeTypeHermes {
 		return proxyURLWithPath(instance.ID, "/chat", token)
 	}
 	return proxyURLWithPath(instance.ID, "/", token)
+}
+
+func opencodePublicURL(instanceID int, token string) string {
+	// DNS and TLS are deployment concerns. ClawManager only expands the
+	// deployment-provided origin template, so the same code supports public
+	// wildcard DNS (for example nip.io) and an offline authoritative DNS zone.
+	template := strings.TrimSpace(os.Getenv(openCodePublicURLTemplateEnvVar))
+	if template == "" || !strings.Contains(template, "{instance_id}") {
+		return ""
+	}
+
+	rawURL := strings.ReplaceAll(template, "{instance_id}", strconv.Itoa(instanceID))
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || strings.TrimSpace(parsed.Host) == "" {
+		return ""
+	}
+	if parsed.Path == "" {
+		parsed.Path = "/"
+	}
+	if token != "" {
+		query := parsed.Query()
+		query.Set("token", token)
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String()
 }
 
 // GetTargetPortForInstance returns the service target port used by the instance type.
