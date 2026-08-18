@@ -21,7 +21,6 @@ import (
 	"clawreef/internal/services"
 	"clawreef/internal/services/k8s"
 	"clawreef/internal/services/leader"
-	"clawreef/internal/teamtemplate"
 
 	"github.com/gin-gonic/gin"
 )
@@ -76,7 +75,6 @@ func main() {
 	rolloutRepo := repository.NewRuntimeRolloutRepository(database)
 	workspaceFileAuditRepo := repository.NewWorkspaceFileAuditRepository(database)
 	teamRepo := repository.NewTeamRepository(database)
-	customTeamTemplateRepo := repository.NewCustomTeamTemplateRepository(database)
 	skillRepo := repository.NewSkillRepository(database)
 	securityScanRepo := repository.NewSecurityScanRepository(database)
 	instanceExternalAccessRepo := repository.NewInstanceExternalAccessRepository(database)
@@ -160,7 +158,6 @@ func main() {
 	securityScanService := services.NewSecurityScanService(securityScanRepo, skillRepo, objectStorageService, skillScannerClient)
 	externalAccessService := services.NewInstanceExternalAccessService(instanceExternalAccessRepo)
 	aiGatewayService := aigateway.NewService(llmModelRepo, modelInvocationService, auditEventService, costRecordService, riskDetectionService, riskHitService, chatSessionService, chatMessageService)
-	customTeamTemplateService := teamtemplate.NewService(customTeamTemplateRepo, aiGatewayService)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
@@ -175,12 +172,12 @@ func main() {
 		skillService,
 		externalAccessService,
 		aiObservabilityService,
+		services.NewInstanceShellService(runtimePodRepo, bindingRepo),
 		services.WithInstanceProxyRuntimeRepositories(instanceRepo, runtimePodRepo, bindingRepo),
 	)
 	systemSettingsHandler := handlers.NewSystemSettingsHandler(systemImageSettingService)
 	llmModelHandler := handlers.NewLLMModelHandler(llmModelService)
-	aiGatewayHandler := handlers.NewAIGatewayHandler(aiGatewayService)
-	customTeamTemplateHandler := handlers.NewCustomTeamTemplateHandler(customTeamTemplateService)
+	aiGatewayHandler := handlers.NewAIGatewayHandler(aiGatewayService, instanceService, workspaceFileService, runtimeWorkspaceFileService)
 	aiObservabilityHandler := handlers.NewAIObservabilityHandler(aiObservabilityService)
 	riskRuleHandler := handlers.NewRiskRuleHandler(riskRuleService)
 	egressPrivateExceptionHandler := handlers.NewEgressPrivateExceptionHandler(egressPrivateExceptionService)
@@ -491,21 +488,6 @@ func main() {
 			teams.DELETE("/:id/members/:memberID", teamHandler.DeleteMember)
 		}
 
-		customTeamTemplates := api.Group("/custom-team-templates")
-		customTeamTemplates.Use(middleware.Auth())
-		customTeamTemplates.Use(middleware.SetUserInfo(userRepo))
-		{
-			customTeamTemplates.GET("", customTeamTemplateHandler.List)
-			customTeamTemplates.POST("", customTeamTemplateHandler.Generate)
-			customTeamTemplates.GET("/:id", customTeamTemplateHandler.Get)
-			customTeamTemplates.PUT("/:id", customTeamTemplateHandler.UpdateMetadata)
-			customTeamTemplates.DELETE("/:id", customTeamTemplateHandler.Delete)
-			customTeamTemplates.POST("/:id/revise", customTeamTemplateHandler.Revise)
-			customTeamTemplates.POST("/:id/regenerate", customTeamTemplateHandler.Regenerate)
-			customTeamTemplates.POST("/:id/members/:memberID/adjust", customTeamTemplateHandler.AdjustMember)
-			customTeamTemplates.POST("/:id/members/:memberID/regenerate", customTeamTemplateHandler.RegenerateMember)
-		}
-
 		openClawConfigs := api.Group("/openclaw-configs")
 		openClawConfigs.Use(middleware.Auth())
 		openClawConfigs.Use(middleware.SetUserInfo(userRepo))
@@ -689,6 +671,8 @@ func main() {
 		{
 			gatewayLLM.GET("/models", aiGatewayHandler.ListModels)
 			gatewayLLM.POST("/chat/completions", aiGatewayHandler.ChatCompletions)
+			gatewayLLM.POST("/v1/responses", aiGatewayHandler.Responses)
+			gatewayLLM.POST("/v1/messages", aiGatewayHandler.AnthropicMessages)
 		}
 
 		agent := api.Group("/agent")
