@@ -78,6 +78,12 @@ func buildRuntimeConfig(instanceType, osType, osVersion string, registry, tag *s
 			config.Image = fmt.Sprintf("%s/%s:%s", defaultRegistry, "openclaw-desktop", defaultTag)
 		}
 		config.Env = defaultWebtopDesktopEnv("ClawManager Desktop")
+	case RuntimeTypeDeepSeekHarness:
+		config.Image = defaultSystemImageSettings[RuntimeTypeDeepSeekHarness]
+		config.Port = 3001
+		config.MountPath = "/config"
+		config.Env = defaultWebtopDesktopEnv("DeepSeek Harness Pro")
+		config.Env["DSH_HOME"] = "/config/.dsh"
 	case "debian":
 		config.Image = fmt.Sprintf("%s/%s:%s", defaultRegistry, "debian-desktop", defaultTag)
 	case "centos":
@@ -99,7 +105,7 @@ func defaultPortForInstanceType(instanceType string) int32 {
 
 func defaultMountPathForInstanceType(instanceType string) string {
 	switch instanceType {
-	case "ubuntu", "webtop", "openclaw", "workbuddy":
+	case "ubuntu", "webtop", "openclaw", "workbuddy", RuntimeTypeDeepSeekHarness:
 		return "/config"
 	case "hermes":
 		return "/config"
@@ -117,6 +123,10 @@ func defaultEnvForInstanceType(instanceType string) map[string]string {
 	case "hermes":
 		env := defaultWebtopDesktopEnv("Hermes Runtime")
 		env["HERMES_HOME"] = "/config/.hermes"
+		return env
+	case RuntimeTypeDeepSeekHarness:
+		env := defaultWebtopDesktopEnv("DeepSeek Harness Pro")
+		env["DSH_HOME"] = "/config/.dsh"
 		return env
 	default:
 		return map[string]string{}
@@ -161,7 +171,7 @@ func withInstanceProxyEnv(instanceType string, instanceID int, env map[string]st
 
 func usesWebtopImage(instanceType string) bool {
 	switch instanceType {
-	case "ubuntu", "webtop", "hermes", "openclaw", "workbuddy":
+	case "ubuntu", "webtop", "hermes", "openclaw", "workbuddy", RuntimeTypeDeepSeekHarness:
 		return true
 	default:
 		return false

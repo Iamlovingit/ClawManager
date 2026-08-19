@@ -36,17 +36,18 @@ import { useI18n } from "../../contexts/I18nContext";
 import { useInstanceStatusWebSocket } from "../../hooks/useWebSocket";
 import type { InstanceStatusUpdate } from "../../hooks/useWebSocket";
 import { instanceService } from "../../services/instanceService";
-import type {
-  ExternalAccessExpirationMode,
-  ExternalAccessExpirationPreset,
-  ExternalAccessRequest,
-  Instance,
-  InstanceAvailability,
-  InstanceExternalAccess,
-  InstanceRuntimeCommand,
-  InstanceRuntimeDetails,
-  InstanceStatus,
-  DesktopStreamProfile,
+import {
+  formatInstanceType,
+  type ExternalAccessExpirationMode,
+  type ExternalAccessExpirationPreset,
+  type ExternalAccessRequest,
+  type Instance,
+  type InstanceAvailability,
+  type InstanceExternalAccess,
+  type InstanceRuntimeCommand,
+  type InstanceRuntimeDetails,
+  type InstanceStatus,
+  type DesktopStreamProfile,
 } from "../../types/instance";
 
 const META_POLL_INTERVAL_MS = 5000;
@@ -103,10 +104,6 @@ function availabilityClass(availability: InstanceAvailability) {
   }
 }
 
-function typeLabel(type: string) {
-  return type === "hermes" ? "Hermes" : type === "openclaw" ? "OpenClaw" : type;
-}
-
 function formatBytes(value?: number) {
   if (!value || value <= 0) {
     return "0 B";
@@ -126,6 +123,7 @@ function supportsWorkspace(instance: Instance) {
     instance.type === "openclaw" ||
     instance.type === "hermes" ||
     instance.type === "workbuddy" ||
+    instance.type === "deepseek-harness" ||
     Boolean(instance.workspace_path)
   );
 }
@@ -935,7 +933,7 @@ const InstanceDetailPage: React.FC = () => {
           </span>
         </div>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-500">
-          <span>{typeLabel(instance.type)}</span>
+          <span>{formatInstanceType(instance.type)}</span>
           <span>Mode {instance.instance_mode === "pro" ? "Pro" : "Lite"}</span>
           <span>Runtime {instance.runtime_type}</span>
           <span>{formatBytes(status?.workspace_usage_bytes ?? instance.workspace_usage_bytes)}</span>

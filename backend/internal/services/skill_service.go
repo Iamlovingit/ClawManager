@@ -46,37 +46,37 @@ const (
 )
 
 type SkillPayload struct {
-	ID               int                   `json:"id"`
-	ExternalSkillID  string                `json:"external_skill_id"`
-	UserID           int                   `json:"user_id"`
-	SkillKey         string                `json:"skill_key"`
-	Name             string                `json:"name"`
-	Description      *string               `json:"description,omitempty"`
-	Status           string                `json:"status"`
-	SourceType       string                `json:"source_type"`
-	RiskLevel        string                `json:"risk_level"`
-	ScanStatus       string                `json:"scan_status"`
-	LastScannedAt    *time.Time            `json:"last_scanned_at,omitempty"`
-	CurrentVersionID *int                  `json:"current_version_id,omitempty"`
-	CurrentVersionNo *int                  `json:"current_version_no,omitempty"`
-	ContentHash      *string               `json:"content_hash,omitempty"`
-	ContentMD5       *string               `json:"content_md5,omitempty"`
-	ArchiveHash      *string               `json:"archive_hash,omitempty"`
-	RiskReason       *string               `json:"risk_reason,omitempty"`
-	TopFindings      []SkillFindingPayload `json:"top_findings,omitempty"`
-	InstanceCount    int                   `json:"instance_count"`
-	Visibility       string                `json:"visibility"`
-	PublishedAt      *time.Time            `json:"published_at,omitempty"`
-	PublishedBy      *int                  `json:"published_by,omitempty"`
-	Tags             []SkillHubTagPayload  `json:"tags,omitempty"`
+	ID                       int                   `json:"id"`
+	ExternalSkillID          string                `json:"external_skill_id"`
+	UserID                   int                   `json:"user_id"`
+	SkillKey                 string                `json:"skill_key"`
+	Name                     string                `json:"name"`
+	Description              *string               `json:"description,omitempty"`
+	Status                   string                `json:"status"`
+	SourceType               string                `json:"source_type"`
+	RiskLevel                string                `json:"risk_level"`
+	ScanStatus               string                `json:"scan_status"`
+	LastScannedAt            *time.Time            `json:"last_scanned_at,omitempty"`
+	CurrentVersionID         *int                  `json:"current_version_id,omitempty"`
+	CurrentVersionNo         *int                  `json:"current_version_no,omitempty"`
+	ContentHash              *string               `json:"content_hash,omitempty"`
+	ContentMD5               *string               `json:"content_md5,omitempty"`
+	ArchiveHash              *string               `json:"archive_hash,omitempty"`
+	RiskReason               *string               `json:"risk_reason,omitempty"`
+	TopFindings              []SkillFindingPayload `json:"top_findings,omitempty"`
+	InstanceCount            int                   `json:"instance_count"`
+	Visibility               string                `json:"visibility"`
+	PublishedAt              *time.Time            `json:"published_at,omitempty"`
+	PublishedBy              *int                  `json:"published_by,omitempty"`
+	Tags                     []SkillHubTagPayload  `json:"tags,omitempty"`
 	Publishable              bool                  `json:"publishable"`
 	PublishBlockedReason     *string               `json:"publish_blocked_reason,omitempty"`
 	PackageCollectError      *string               `json:"package_collect_error,omitempty"`
 	PackageMaterializeStatus *string               `json:"package_materialize_status,omitempty"`
 	PackageMaterializeError  *string               `json:"package_materialize_error,omitempty"`
 	OwnerUsername            *string               `json:"owner_username,omitempty"`
-	CreatedAt        time.Time             `json:"created_at"`
-	UpdatedAt        time.Time             `json:"updated_at"`
+	CreatedAt                time.Time             `json:"created_at"`
+	UpdatedAt                time.Time             `json:"updated_at"`
 }
 
 type SkillFindingPayload struct {
@@ -705,6 +705,9 @@ func liteRuntimePersistentRoot(instance *models.Instance) string {
 	workspacePath := filepath.Clean(strings.TrimSpace(*instance.WorkspacePath))
 	if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeHermes) {
 		return filepath.Join(workspacePath, "home", ".hermes")
+	}
+	if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeDeepSeekHarness) {
+		return filepath.Join(workspacePath, "home", ".dsh")
 	}
 	return filepath.Join(workspacePath, "home", ".openclaw")
 }
@@ -1930,7 +1933,7 @@ func (s *skillService) toSkillPayload(item models.Skill) (*SkillPayload, error) 
 	payload := &SkillPayload{
 		ID: item.ID, ExternalSkillID: formatExternalSkillID(item.ID), UserID: item.UserID, SkillKey: item.SkillKey, Name: item.Name, Description: item.Description,
 		Status: item.Status, SourceType: item.SourceType, RiskLevel: item.RiskLevel, ScanStatus: "pending",
-		Visibility: skillVisibilityPrivate,
+		Visibility:    skillVisibilityPrivate,
 		LastScannedAt: item.LastScannedAt, CurrentVersionID: item.CurrentVersionID, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
 	if strings.TrimSpace(item.Visibility) != "" {

@@ -10,7 +10,11 @@ import {
   type SystemImageSetting,
 } from "../../services/systemSettingsService";
 import { teamService } from "../../services/teamService";
-import type { Instance, InstanceAvailability } from "../../types/instance";
+import {
+  formatInstanceType,
+  type Instance,
+  type InstanceAvailability,
+} from "../../types/instance";
 import type { Team, TeamMember } from "../../types/team";
 
 type AvailabilityFilter = "all" | InstanceAvailability;
@@ -130,10 +134,6 @@ function availabilityClass(availability: InstanceAvailability) {
   }
 }
 
-function typeLabel(type: string) {
-  return type === "hermes" ? "Hermes" : type === "openclaw" ? "OpenClaw" : type;
-}
-
 function modeLabel(mode: Instance["instance_mode"]) {
   return mode === "pro" ? "Pro" : "Lite";
 }
@@ -189,7 +189,9 @@ const InstanceListPage: React.FC = () => {
   const [batchCreatePrefix, setBatchCreatePrefix] = useState("lite-openclaw");
   const [batchCreateCount, setBatchCreateCount] = useState(3);
   const [batchCreateStartIndex, setBatchCreateStartIndex] = useState(1);
-  const [batchCreateType, setBatchCreateType] = useState<"openclaw" | "hermes">("openclaw");
+  const [batchCreateType, setBatchCreateType] = useState<
+    "openclaw" | "hermes" | "deepseek-harness"
+  >("openclaw");
   const [batchCreateImageKey, setBatchCreateImageKey] = useState("");
   const [runtimeImageSettings, setRuntimeImageSettings] = useState<SystemImageSetting[]>([]);
   const [batchCreateLoading, setBatchCreateLoading] = useState(false);
@@ -273,7 +275,7 @@ const InstanceListPage: React.FC = () => {
       }
       return (
         instance.name.toLowerCase().includes(query) ||
-        typeLabel(instance.type).toLowerCase().includes(query) ||
+        formatInstanceType(instance.type).toLowerCase().includes(query) ||
         instance.instance_mode.toLowerCase().includes(query) ||
         modeLabel(instance.instance_mode).toLowerCase().includes(query) ||
         (teamMemberships.get(instance.id) || []).some(({ team, member }) =>
@@ -565,11 +567,19 @@ const InstanceListPage: React.FC = () => {
                   {t("instances.type")}
                   <select
                     value={batchCreateType}
-                    onChange={(event) => setBatchCreateType(event.target.value as "openclaw" | "hermes")}
+                    onChange={(event) =>
+                      setBatchCreateType(
+                        event.target.value as
+                          | "openclaw"
+                          | "hermes"
+                          | "deepseek-harness",
+                      )
+                    }
                     className="app-input mt-1 w-full"
                   >
                     <option value="openclaw">OpenClaw</option>
                     <option value="hermes">Hermes</option>
+                    <option value="deepseek-harness">DeepSeek Harness</option>
                   </select>
                 </label>
                 <label className="block text-sm font-medium text-slate-700">
@@ -777,7 +787,7 @@ const InstanceListPage: React.FC = () => {
                     </td>
                     <td className="px-4 py-3 text-slate-600">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="truncate">{typeLabel(instance.type)}</span>
+                        <span className="truncate">{formatInstanceType(instance.type)}</span>
                         <span
                           className={`inline-flex shrink-0 rounded-md border px-2 py-0.5 text-xs font-medium ${modeClass(
                             instance.instance_mode,

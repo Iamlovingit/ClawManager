@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	RuntimeTypeOpenClaw = "openclaw"
-	RuntimeTypeHermes   = "hermes"
+	RuntimeTypeOpenClaw        = "openclaw"
+	RuntimeTypeHermes          = "hermes"
+	RuntimeTypeDeepSeekHarness = "deepseek-harness"
 
 	InstanceModeLite = "lite"
 	InstanceModePro  = "pro"
@@ -21,11 +22,12 @@ const (
 	RuntimePodCapacity      = 100
 	// OpenClaw Lite reserves a primary gateway port plus its adjacent browser
 	// ports. Hermes Lite only exposes the primary dashboard port.
-	RuntimeGatewayPortOffset        = 0
-	RuntimeBrowserCDPPortOffset     = 1
-	RuntimeBrowserControlPortOffset = 2
-	RuntimeOpenClawPortsPerInstance = RuntimeBrowserControlPortOffset + 1
-	RuntimeHermesPortsPerInstance   = 1
+	RuntimeGatewayPortOffset               = 0
+	RuntimeBrowserCDPPortOffset            = 1
+	RuntimeBrowserControlPortOffset        = 2
+	RuntimeOpenClawPortsPerInstance        = RuntimeBrowserControlPortOffset + 1
+	RuntimeHermesPortsPerInstance          = 1
+	RuntimeDeepSeekHarnessPortsPerInstance = 1
 	// Keep the shared range large enough for the runtime with the largest port
 	// block. Runtime-specific allocation still stops at the Pod slot capacity.
 	RuntimeGatewayPortEnd = RuntimeGatewayPortStart + RuntimePodCapacity*RuntimeOpenClawPortsPerInstance - 1
@@ -33,8 +35,13 @@ const (
 )
 
 func RuntimeGatewayPortBlockSize(runtimeType string) int {
-	if normalized, ok := NormalizeV2RuntimeType(runtimeType); ok && normalized == RuntimeTypeHermes {
-		return RuntimeHermesPortsPerInstance
+	if normalized, ok := NormalizeV2RuntimeType(runtimeType); ok {
+		switch normalized {
+		case RuntimeTypeHermes:
+			return RuntimeHermesPortsPerInstance
+		case RuntimeTypeDeepSeekHarness:
+			return RuntimeDeepSeekHarnessPortsPerInstance
+		}
 	}
 	return RuntimeOpenClawPortsPerInstance
 }
@@ -45,6 +52,8 @@ func NormalizeV2RuntimeType(instanceType string) (string, bool) {
 		return RuntimeTypeOpenClaw, true
 	case RuntimeTypeHermes:
 		return RuntimeTypeHermes, true
+	case RuntimeTypeDeepSeekHarness:
+		return RuntimeTypeDeepSeekHarness, true
 	default:
 		return "", false
 	}

@@ -153,6 +153,44 @@ func TestRuntimeSkillInstallRootOpenClawAndHermes(t *testing.T) {
 	}
 }
 
+func TestRuntimeSkillInstallRootDeepSeekHarness(t *testing.T) {
+	workspace := "/workspaces/deepseek-harness/user-45/instance-92"
+	for _, tc := range []struct {
+		name         string
+		runtimeType  string
+		instanceMode string
+		want         string
+	}{
+		{
+			name:         "lite",
+			runtimeType:  RuntimeBackendGateway,
+			instanceMode: InstanceModeLite,
+			want:         filepath.Join(workspace, "home", ".dsh", "skills"),
+		},
+		{
+			name:         "pro",
+			runtimeType:  RuntimeBackendDesktop,
+			instanceMode: InstanceModePro,
+			want:         filepath.Join(workspace, ".dsh", "skills"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := &models.Instance{
+				Type:          RuntimeTypeDeepSeekHarness,
+				RuntimeType:   tc.runtimeType,
+				InstanceMode:  tc.instanceMode,
+				WorkspacePath: &workspace,
+			}
+			if got := runtimeSkillInstallRoot(instance); got != tc.want {
+				t.Fatalf("DeepSeek Harness skill root = %q, want %q", got, tc.want)
+			}
+			if !SupportsServerWorkspaceSkillScan(instance) {
+				t.Fatal("DeepSeek Harness must support workspace skill scanning")
+			}
+		})
+	}
+}
+
 func TestResolveInstanceSkillSourceTypePreservesInjected(t *testing.T) {
 	existing := &models.InstanceSkill{SourceType: "injected_by_clawmanager"}
 	skill := &models.Skill{SourceType: skillSourceUploaded}
@@ -234,22 +272,22 @@ func TestSyncAgentSkillsPreservesInjectedProvenanceAfterWorkspaceScan(t *testing
 	stub := &provenanceCaptureRepoStub{
 		capturingSkillRepoStub: capturingSkillRepoStub{
 			skillRepoStub: skillRepoStub{
-			skills: map[int]*models.Skill{
-				10: {
-					ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
-					SourceType: skillSourceUploaded, Status: skillStatusActive,
-					Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+				skills: map[int]*models.Skill{
+					10: {
+						ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
+						SourceType: skillSourceUploaded, Status: skillStatusActive,
+						Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+					},
 				},
-			},
-			blobs: map[int]*models.SkillBlob{
-				1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
-			},
-			versions: map[int]*models.SkillVersion{
-				1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
-			},
-			instanceSkills: []models.InstanceSkill{
-				{InstanceID: 1, SkillID: 10, SourceType: "injected_by_clawmanager", Status: "active"},
-			},
+				blobs: map[int]*models.SkillBlob{
+					1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
+				},
+				versions: map[int]*models.SkillVersion{
+					1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
+				},
+				instanceSkills: []models.InstanceSkill{
+					{InstanceID: 1, SkillID: 10, SourceType: "injected_by_clawmanager", Status: "active"},
+				},
 			},
 		},
 	}
@@ -283,19 +321,19 @@ func TestSyncAgentSkillsReusesUploadedSkillOnWorkspaceScan(t *testing.T) {
 	stub := &provenanceCaptureRepoStub{
 		capturingSkillRepoStub: capturingSkillRepoStub{
 			skillRepoStub: skillRepoStub{
-			skills: map[int]*models.Skill{
-				10: {
-					ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
-					SourceType: skillSourceUploaded, Status: skillStatusActive,
-					Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+				skills: map[int]*models.Skill{
+					10: {
+						ID: 10, UserID: 1, SkillKey: "ppt-1-0-0", Name: "ppt-1.0.0",
+						SourceType: skillSourceUploaded, Status: skillStatusActive,
+						Visibility: skillVisibilityPublic, CurrentVersionID: &versionID,
+					},
 				},
-			},
-			blobs: map[int]*models.SkillBlob{
-				1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
-			},
-			versions: map[int]*models.SkillVersion{
-				1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
-			},
+				blobs: map[int]*models.SkillBlob{
+					1: {ID: 1, ContentHash: contentHash, ObjectKey: "hub/ppt.zip", ScanStatus: "completed"},
+				},
+				versions: map[int]*models.SkillVersion{
+					1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
+				},
 			},
 		},
 	}
@@ -408,9 +446,9 @@ func TestRequestLiteSkillInventorySyncUsesIncrementalWhenAgentResyncFollows(t *t
 	}}
 
 	svc := &skillService{
-		repo:         stub,
-		instanceRepo: instRepo,
-		commandRepo:  cmdRepo,
+		repo:           stub,
+		instanceRepo:   instRepo,
+		commandRepo:    cmdRepo,
 		commandService: &noopInstanceCommandService{},
 	}
 	svc.ConfigureRuntimeSkillSync(bindingRepo, podRepo, agent)

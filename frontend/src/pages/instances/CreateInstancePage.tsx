@@ -47,6 +47,8 @@ const CUSTOM_RESOURCE_PRESET = "custom";
 const SKILLS_PER_PAGE = 6;
 const supportsRuntimeInjection = (type: string) =>
   type === "openclaw" || type === "hermes" || type === "workbuddy";
+const supportsSkillSelection = (type: string) =>
+  supportsRuntimeInjection(type) || type === "deepseek-harness";
 const isProOnlyInstanceType = (type: string) =>
   type === "custom" || type === "workbuddy";
 const DESKTOP_STREAM_PROFILES: Array<{
@@ -109,6 +111,10 @@ const INSTANCE_TYPE_I18N_KEYS: Record<
     label: "instances.typeOptions.hermes.label",
     description: "instances.typeOptions.hermes.description",
   },
+  "deepseek-harness": {
+    label: "instances.typeOptions.deepseekHarness.label",
+    description: "instances.typeOptions.deepseekHarness.description",
+  },
   workbuddy: {
     label: "instances.typeOptions.workbuddy.label",
     description: "instances.typeOptions.workbuddy.description",
@@ -124,11 +130,11 @@ const INSTANCE_TYPE_I18N_KEYS: Record<
 const TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS = new Set(["workbuddy"]);
 
 const FALLBACK_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter((type) =>
-  ["openclaw", "hermes", "workbuddy"].includes(type.id) &&
+  ["openclaw", "hermes", "workbuddy", "deepseek-harness"].includes(type.id) &&
   !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
 );
 const CONFIGURED_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter((type) =>
-  ["openclaw", "hermes", "workbuddy", "custom"].includes(type.id) &&
+  ["openclaw", "hermes", "workbuddy", "deepseek-harness", "custom"].includes(type.id) &&
   !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
 );
 
@@ -171,7 +177,12 @@ const getBuiltInEnvTemplates = (
   diskGb: number,
 ): BuiltInEnvTemplate[] => {
   const templates: BuiltInEnvTemplate[] = [];
-  const persistentDir = type === "hermes" ? "/config/.hermes" : "/config";
+  const persistentDir =
+    type === "hermes"
+      ? "/config/.hermes"
+      : type === "deepseek-harness"
+        ? "/config/.dsh"
+        : "/config";
 
   if (type === "ubuntu") {
     templates.push(
@@ -298,13 +309,21 @@ const getBuiltInEnvTemplates = (
     );
   }
 
-  if (type === "openclaw" || type === "workbuddy") {
+  if (
+    type === "openclaw" ||
+    type === "workbuddy" ||
+    type === "deepseek-harness"
+  ) {
     templates.push(
       {
         key: "TITLE",
         description: t("instances.envDescDesktopTitleOpenClaw"),
         defaultValue:
-          type === "workbuddy" ? "Workbuddy" : "ClawManager Desktop",
+          type === "workbuddy"
+            ? "Workbuddy"
+            : type === "deepseek-harness"
+              ? "DeepSeek Harness"
+              : "ClawManager Desktop",
       },
       {
         key: "SUBFOLDER",
@@ -742,7 +761,9 @@ const CreateInstancePage: React.FC = () => {
         setOpenClawResourceIds([]);
         setOpenClawPreview(null);
         setOpenClawPreviewError(null);
-        setSelectedSkillIds([]);
+        if (!supportsSkillSelection(typeId)) {
+          setSelectedSkillIds([]);
+        }
       }
       setFormData({
         ...formData,
@@ -907,7 +928,7 @@ const CreateInstancePage: React.FC = () => {
         image_registry: selectedRuntimeImage?.image,
         image_tag: selectedRuntimeImage ? undefined : formData.image_tag,
         environment_overrides: overrides,
-        skill_ids: supportsRuntimeInjection(formData.type)
+        skill_ids: supportsSkillSelection(formData.type)
           ? selectedSkillIds
           : undefined,
         openclaw_config_plan:
@@ -1157,6 +1178,16 @@ const CreateInstancePage: React.FC = () => {
       );
     }
 
+    if (typeId === "deepseek-harness") {
+      return (
+        <img
+          src="/deepseek-harness.svg?v=20260819-2"
+          alt="DeepSeek Harness"
+          className="h-10 w-10 object-contain"
+        />
+      );
+    }
+
     return (
       <svg
         className="h-6 w-6 text-indigo-600"
@@ -1221,6 +1252,117 @@ const CreateInstancePage: React.FC = () => {
       </div>
     );
   };
+
+  const renderSkillSelector = () => (
+    <>
+      {selectedSkillNames.length > 0 && (
+        <div className="mt-4">
+          {renderSummaryTagList(
+            selectedSkillNames,
+            t("instances.noReusableSkillsSelected"),
+            "emerald",
+          )}
+        </div>
+      )}
+
+      {skillInventorySummary.hiddenByRisk > 0 && (
+        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {skillRiskPolicySummary}
+        </div>
+      )}
+
+      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+        {skillLoading ? (
+          <div className="text-sm text-gray-500">
+            {t("openClawResourcesPage.loadingSkills")}
+          </div>
+        ) : availableSkills.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-gray-300 px-4 py-5 text-sm text-gray-500">
+            {t("instances.noAvailableSkillsForInjection")}
+          </div>
+        ) : (
+          paginatedSkills.map((skill) => {
+            const checked = selectedSkillIds.includes(skill.id);
+            return (
+              <label
+                key={skill.id}
+                className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 ${
+                  checked
+                    ? "border-indigo-300 bg-indigo-50"
+                    : "border-gray-200 bg-white"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(event) =>
+                    setSelectedSkillIds((current) =>
+                      event.target.checked
+                        ? [...current, skill.id]
+                        : current.filter((value) => value !== skill.id),
+                    )
+                  }
+                />
+                <span className="min-w-0">
+                  <span className="block font-medium text-gray-900">
+                    {skill.name}
+                  </span>
+                  <span className="mt-1 block text-xs text-gray-500">
+                    {t("instances.skillRiskVersionLabel", {
+                      key: skill.skill_key,
+                      risk: skill.risk_level,
+                      version: skill.current_version_no || 1,
+                    })}
+                  </span>
+                  {skill.description && (
+                    <span className="mt-2 block text-sm text-gray-600">
+                      {skill.description}
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          })
+        )}
+      </div>
+
+      {!skillLoading && availableSkills.length > 0 && (
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-gray-200 pt-4">
+          <p className="text-sm text-gray-500">
+            {t("instances.skillPageSummary", {
+              page: skillPage,
+              totalPages: totalSkillPages,
+              totalSkills: availableSkills.length,
+            })}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setSkillPage((current) => Math.max(1, current - 1))
+              }
+              disabled={skillPage <= 1}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("instances.previous")}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setSkillPage((current) =>
+                  Math.min(totalSkillPages, current + 1),
+                )
+              }
+              disabled={skillPage >= totalSkillPages}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("instances.nextPage")}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 
   return (
     <UserLayout>
@@ -1369,7 +1511,13 @@ const CreateInstancePage: React.FC = () => {
                   >
                     <div className="flex items-center">
                       <div className="flex-shrink-0">
-                        <div className="h-12 w-12 rounded-lg bg-indigo-100 flex items-center justify-center">
+                        <div
+                          className={`flex h-12 w-12 items-center justify-center rounded-lg ${
+                            type.id === "deepseek-harness"
+                              ? "border border-slate-200 bg-white"
+                              : "bg-indigo-100"
+                          }`}
+                        >
                           {renderTypeIcon(type.id)}
                         </div>
                       </div>
@@ -2083,118 +2231,7 @@ const CreateInstancePage: React.FC = () => {
                           </span>
                         </div>
 
-                        {selectedSkillNames.length > 0 && (
-                          <div className="mt-4">
-                            {renderSummaryTagList(
-                              selectedSkillNames,
-                              t("instances.noReusableSkillsSelected"),
-                              "emerald",
-                            )}
-                          </div>
-                        )}
-
-                        {skillInventorySummary.hiddenByRisk > 0 && (
-                          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                            {skillRiskPolicySummary}
-                          </div>
-                        )}
-
-                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                          {skillLoading ? (
-                            <div className="text-sm text-gray-500">
-                              {t("openClawResourcesPage.loadingSkills")}
-                            </div>
-                          ) : availableSkills.length === 0 ? (
-                            <div className="rounded-2xl border border-dashed border-gray-300 px-4 py-5 text-sm text-gray-500">
-                              {t("instances.noAvailableSkillsForInjection")}
-                            </div>
-                          ) : (
-                            paginatedSkills.map((skill) => {
-                              const checked = selectedSkillIds.includes(
-                                skill.id,
-                              );
-                              return (
-                                <label
-                                  key={skill.id}
-                                  className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 ${
-                                    checked
-                                      ? "border-indigo-300 bg-indigo-50"
-                                      : "border-gray-200 bg-white"
-                                  }`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    onChange={(e) =>
-                                      setSelectedSkillIds((current) =>
-                                        e.target.checked
-                                          ? [...current, skill.id]
-                                          : current.filter(
-                                              (value) => value !== skill.id,
-                                            ),
-                                      )
-                                    }
-                                  />
-                                  <span className="min-w-0">
-                                    <span className="block font-medium text-gray-900">
-                                      {skill.name}
-                                    </span>
-                                    <span className="mt-1 block text-xs text-gray-500">
-                                      {t("instances.skillRiskVersionLabel", {
-                                        key: skill.skill_key,
-                                        risk: skill.risk_level,
-                                        version: skill.current_version_no || 1,
-                                      })}
-                                    </span>
-                                    {skill.description && (
-                                      <span className="mt-2 block text-sm text-gray-600">
-                                        {skill.description}
-                                      </span>
-                                    )}
-                                  </span>
-                                </label>
-                              );
-                            })
-                          )}
-                        </div>
-
-                        {!skillLoading && availableSkills.length > 0 && (
-                          <div className="mt-4 flex items-center justify-between gap-3 border-t border-gray-200 pt-4">
-                            <p className="text-sm text-gray-500">
-                              {t("instances.skillPageSummary", {
-                                page: skillPage,
-                                totalPages: totalSkillPages,
-                                totalSkills: availableSkills.length,
-                              })}
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setSkillPage((current) =>
-                                    Math.max(1, current - 1),
-                                  )
-                                }
-                                disabled={skillPage <= 1}
-                                className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                {t("instances.previous")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setSkillPage((current) =>
-                                    Math.min(totalSkillPages, current + 1),
-                                  )
-                                }
-                                disabled={skillPage >= totalSkillPages}
-                                className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                {t("instances.nextPage")}
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                        {renderSkillSelector()}
                       </div>
                     )}
 
@@ -2270,6 +2307,28 @@ const CreateInstancePage: React.FC = () => {
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {formData.type === "deepseek-harness" && (
+                  <div className="app-panel order-2 p-6">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h2 className="text-lg font-medium text-gray-900">
+                          {t("instances.skillsSection")}
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-500">
+                          {t("instances.noReusableSkillsSelected")}
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                        {t("instances.selectedCount", {
+                          count: selectedSkillIds.length,
+                        })}
+                      </span>
+                    </div>
+
+                    {renderSkillSelector()}
                   </div>
                 )}
               </div>
@@ -2430,32 +2489,34 @@ const CreateInstancePage: React.FC = () => {
                         )
                       )}
                     </div>
-                    {supportsRuntimeInjection(formData.type) && (
+                    {supportsSkillSelection(formData.type) && (
                       <>
-                        <div className="sm:col-span-2">
-                          <dt className="text-sm font-medium text-gray-500">
-                            {t("instances.channelInjection")}
-                          </dt>
-                          {openClawInjectionMode === "archive" ? (
-                            <p className="mt-2 text-sm text-gray-400">
-                              {t("instances.archiveSkipsChannelInjection")}
-                            </p>
-                          ) : openClawPreviewLoading ? (
-                            <p className="mt-2 text-sm text-gray-400">
-                              {t("instances.compilingRuntimePreview")}
-                            </p>
-                          ) : openClawPreviewError ? (
-                            <p className="mt-2 text-sm text-red-600">
-                              {openClawPreviewError}
-                            </p>
-                          ) : (
-                            renderSummaryTagList(
-                              resolvedChannelNames,
-                              t("instances.noChannelsSelectedForInjection"),
-                              "indigo",
-                            )
-                          )}
-                        </div>
+                        {supportsRuntimeInjection(formData.type) && (
+                          <div className="sm:col-span-2">
+                            <dt className="text-sm font-medium text-gray-500">
+                              {t("instances.channelInjection")}
+                            </dt>
+                            {openClawInjectionMode === "archive" ? (
+                              <p className="mt-2 text-sm text-gray-400">
+                                {t("instances.archiveSkipsChannelInjection")}
+                              </p>
+                            ) : openClawPreviewLoading ? (
+                              <p className="mt-2 text-sm text-gray-400">
+                                {t("instances.compilingRuntimePreview")}
+                              </p>
+                            ) : openClawPreviewError ? (
+                              <p className="mt-2 text-sm text-red-600">
+                                {openClawPreviewError}
+                              </p>
+                            ) : (
+                              renderSummaryTagList(
+                                resolvedChannelNames,
+                                t("instances.noChannelsSelectedForInjection"),
+                                "indigo",
+                              )
+                            )}
+                          </div>
+                        )}
                         <div className="sm:col-span-2">
                           <dt className="text-sm font-medium text-gray-500">
                             {t("instances.skillInjection")}

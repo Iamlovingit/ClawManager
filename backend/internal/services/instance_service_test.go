@@ -62,7 +62,7 @@ func TestBuildGatewayEnvInjectsGatewayModelCatalog(t *testing.T) {
 	t.Setenv("CLAWMANAGER_LLM_GATEWAY_BASE_URL", "http://gateway.example/api/v1/gateway/llm")
 
 	token := "igt_test_token"
-	for _, instanceType := range []string{"openclaw", "hermes", "workbuddy"} {
+	for _, instanceType := range []string{"openclaw", "hermes", "workbuddy", RuntimeTypeDeepSeekHarness} {
 		t.Run(instanceType, func(t *testing.T) {
 			service := &instanceService{
 				llmModelRepo: &stubLLMModelRepository{
@@ -306,7 +306,7 @@ func TestBuildAgentEnvInjectsHermesAgentConfig(t *testing.T) {
 }
 
 func TestPersistentVolumeMountPathNormalizesManagedDesktopRuntimes(t *testing.T) {
-	for _, instanceType := range []string{"openclaw", "ubuntu", "webtop", "hermes", "workbuddy"} {
+	for _, instanceType := range []string{"openclaw", "ubuntu", "webtop", "hermes", "workbuddy", RuntimeTypeDeepSeekHarness} {
 		t.Run(instanceType, func(t *testing.T) {
 			got := persistentVolumeMountPath(&models.Instance{
 				Type:      instanceType,
@@ -326,6 +326,18 @@ func TestManagedRuntimePersistentDirKeepsHermesSubdirectory(t *testing.T) {
 	})
 	if got != "/config/.hermes" {
 		t.Fatalf("expected Hermes persistent dir /config/.hermes, got %q", got)
+	}
+}
+
+func TestManagedRuntimePersistentDirKeepsDeepSeekHarnessSubdirectory(t *testing.T) {
+	if got := managedRuntimePersistentDir(&models.Instance{Type: RuntimeTypeDeepSeekHarness, MountPath: "/config"}); got != "/config/.dsh" {
+		t.Fatalf("DeepSeek Harness Pro persistent dir = %q", got)
+	}
+	workspace := "/workspaces/deepseek-harness/user-7/instance-11"
+	if got := managedRuntimePersistentDir(&models.Instance{
+		Type: RuntimeTypeDeepSeekHarness, InstanceMode: InstanceModeLite, RuntimeType: RuntimeBackendGateway, WorkspacePath: &workspace,
+	}); got != workspace+"/home/.dsh" {
+		t.Fatalf("DeepSeek Harness Lite persistent dir = %q", got)
 	}
 }
 

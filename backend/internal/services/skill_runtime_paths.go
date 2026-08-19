@@ -24,10 +24,16 @@ func runtimeSkillInstallRoot(instance *models.Instance) string {
 		if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeHermes) {
 			return filepath.Join(workspacePath, "home", ".hermes", "skills")
 		}
+		if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeDeepSeekHarness) {
+			return filepath.Join(workspacePath, "home", ".dsh", "skills")
+		}
 		return filepath.Join(workspacePath, "home", ".openclaw", "workspace", "skills")
 	}
 	if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeHermes) {
 		return filepath.Join(workspacePath, ".hermes", "skills")
+	}
+	if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeDeepSeekHarness) {
+		return filepath.Join(workspacePath, ".dsh", "skills")
 	}
 	return filepath.Join(workspacePath, "home", ".openclaw", "workspace", "skills")
 }
