@@ -58,6 +58,7 @@
 
 Recent highlights from the latest product and documentation updates.
 
+- [2026-08-16] Added DeepSeek Harness Lite and Pro support, including shared runtime-pool isolation, dedicated Webtop desktops, AI Gateway model injection, skills/workspace integration, and dedicated Lite browser origins.
 - [2026-07-07] Added the Security Protection Platform (secplane) frontend — a comprehensive security console covering runtime defense (input/state/decision/output surface, asset tamper-proofing, human approval), host hardening & container isolation, outbound trusted-endpoint governance, policy governance, kill-switch/circuit-breaker, full-chain audit, SecureClaw data-and-component trust auditing, collaboration governance, and input detection. All 4 defense layers are accessible from a unified admin UI with full i18n for 5 languages.
 - [2026-06-14] Added Lite / Pro runtime modes and rollout support, so Lite instances can run through shared gateway runtime pools while Pro instances keep dedicated desktop deployments for stronger isolation.
 - [2026-05-18] Added the Team workspace MVP introduction and preview, covering one-click Team creation, OpenClaw member orchestration, Redis Team Bus injection, shared storage, member status, task dispatch, and event/result views.
@@ -198,7 +199,7 @@ The product is designed to feel coherent across administration, workspace access
 
 ### Lite Mode Deployment
 
-Lite mode provisions instances through a shared gateway runtime pool. Each workspace runs as an isolated gateway process inside managed runtime Pods, which keeps startup fast and lowers dedicated CPU, memory, storage, and GPU allocation overhead while preserving workspace access, Share Link / Password access, channel and skill injection, and admin visibility.
+Lite mode provisions OpenClaw, Hermes, and DeepSeek Harness instances through shared gateway runtime pools. Each workspace runs as an isolated gateway process inside managed runtime Pods, which keeps startup fast and lowers dedicated CPU, memory, storage, and GPU allocation overhead while preserving workspace access, Share Link / Password access, skill management, and admin visibility.
 
 ![](./docs/main/liteopenclaw.png)
 
