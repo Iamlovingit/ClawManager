@@ -14,6 +14,7 @@ const FILTERS: Array<{ value: RuntimeFilter; labelKey?: string; label?: string }
   { value: "all", labelKey: "common.all" },
   { value: "openclaw", label: "OpenClaw" },
   { value: "hermes", label: "Hermes" },
+  { value: "opencode", label: "OpenCode" },
   { value: "deepseek-harness", label: "DeepSeek Harness" },
 ];
 

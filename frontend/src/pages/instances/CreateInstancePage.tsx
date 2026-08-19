@@ -77,11 +77,17 @@ const DESKTOP_STREAM_PROFILES: Array<{
   },
 ];
 
-const runtimeWorkspaceDirectory = (type: string) =>
-  type === "hermes" ? ".hermes" : ".openclaw";
+const runtimeWorkspaceDirectory = (type: string) => {
+  if (type === "hermes") return ".hermes";
+  if (type === "opencode") return ".opencode";
+  return ".openclaw";
+};
 
-const runtimeProductName = (type: string) =>
-  type === "hermes" ? "Hermes" : "OpenClaw";
+const runtimeProductName = (type: string) => {
+  if (type === "hermes") return "Hermes";
+  if (type === "opencode") return "OpenCode";
+  return "OpenClaw";
+};
 
 const INSTANCE_TYPE_I18N_KEYS: Record<
   string,
@@ -111,6 +117,10 @@ const INSTANCE_TYPE_I18N_KEYS: Record<
     label: "instances.typeOptions.hermes.label",
     description: "instances.typeOptions.hermes.description",
   },
+  opencode: {
+    label: "instances.typeOptions.opencode.label",
+    description: "instances.typeOptions.opencode.description",
+  },
   "deepseek-harness": {
     label: "instances.typeOptions.deepseekHarness.label",
     description: "instances.typeOptions.deepseekHarness.description",
@@ -129,13 +139,28 @@ const INSTANCE_TYPE_I18N_KEYS: Record<
 // temporarily removing unavailable runtimes from the new-instance chooser.
 const TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS = new Set(["workbuddy"]);
 
-const FALLBACK_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter((type) =>
-  ["openclaw", "hermes", "workbuddy", "deepseek-harness"].includes(type.id) &&
-  !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
+const FALLBACK_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter(
+  (type) =>
+    [
+      "openclaw",
+      "hermes",
+      "opencode",
+      "workbuddy",
+      "deepseek-harness",
+    ].includes(type.id) &&
+    !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
 );
-const CONFIGURED_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter((type) =>
-  ["openclaw", "hermes", "workbuddy", "deepseek-harness", "custom"].includes(type.id) &&
-  !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
+const CONFIGURED_CREATE_INSTANCE_TYPES = INSTANCE_TYPES.filter(
+  (type) =>
+    [
+      "openclaw",
+      "hermes",
+      "opencode",
+      "workbuddy",
+      "deepseek-harness",
+      "custom",
+    ].includes(type.id) &&
+    !TEMPORARILY_HIDDEN_CREATE_INSTANCE_TYPE_IDS.has(type.id),
 );
 
 const INSTANCE_MODE_OPTIONS: {
@@ -182,7 +207,9 @@ const getBuiltInEnvTemplates = (
       ? "/config/.hermes"
       : type === "deepseek-harness"
         ? "/config/.dsh"
-        : "/config";
+        : type === "opencode"
+          ? "/config/.opencode"
+          : "/config";
 
   if (type === "ubuntu") {
     templates.push(
@@ -309,21 +336,15 @@ const getBuiltInEnvTemplates = (
     );
   }
 
-  if (
-    type === "openclaw" ||
-    type === "workbuddy" ||
-    type === "deepseek-harness"
-  ) {
+  if (type === "openclaw" || type === "deepseek-harness") {
     templates.push(
       {
         key: "TITLE",
         description: t("instances.envDescDesktopTitleOpenClaw"),
         defaultValue:
-          type === "workbuddy"
-            ? "Workbuddy"
-            : type === "deepseek-harness"
-              ? "DeepSeek Harness"
-              : "ClawManager Desktop",
+          type === "deepseek-harness"
+            ? "DeepSeek Harness"
+            : "ClawManager Desktop",
       },
       {
         key: "SUBFOLDER",
@@ -459,7 +480,8 @@ const getRuntimeImageOptionKey = (item: SystemImageSetting): string =>
 
 const normalizeRuntimeImageType = (
   runtimeType?: SystemImageSetting["runtime_type"] | "shell",
-) => (runtimeType === "gateway" || runtimeType === "shell" ? "gateway" : "desktop");
+) =>
+  runtimeType === "gateway" || runtimeType === "shell" ? "gateway" : "desktop";
 
 const CreateInstancePage: React.FC = () => {
   const { user } = useAuth();
@@ -495,7 +517,10 @@ const CreateInstancePage: React.FC = () => {
     string | null
   >(null);
   const [availableSkills, setAvailableSkills] = useState<Skill[]>([]);
-  const [skillInventorySummary, setSkillInventorySummary] = useState({ total: 0, hiddenByRisk: 0 });
+  const [skillInventorySummary, setSkillInventorySummary] = useState({
+    total: 0,
+    hiddenByRisk: 0,
+  });
   const [skillLoading, setSkillLoading] = useState(false);
   const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([]);
   const [skillPage, setSkillPage] = useState(1);
@@ -538,8 +563,7 @@ const CreateInstancePage: React.FC = () => {
       !Object.prototype.hasOwnProperty.call(builtinEnvOverrides, template.key),
   );
   const selectedMode = formData.mode ?? "lite";
-  const selectedRuntimeType =
-    selectedMode === "lite" ? "gateway" : "desktop";
+  const selectedRuntimeType = selectedMode === "lite" ? "gateway" : "desktop";
   const availableTypesForMode = availableTypes.filter(
     (item) => selectedMode === "pro" || !isProOnlyInstanceType(item.id),
   );
@@ -555,7 +579,9 @@ const CreateInstancePage: React.FC = () => {
   const selectedRuntimeImage =
     runtimeImageOptions.find(
       (item) => getRuntimeImageOptionKey(item) === selectedRuntimeImageKey,
-    ) ?? runtimeImageOptions[0] ?? null;
+    ) ??
+    runtimeImageOptions[0] ??
+    null;
   const primaryCustomProRuntimeImage =
     runtimeImageSettings.find(
       (item) =>
@@ -569,7 +595,10 @@ const CreateInstancePage: React.FC = () => {
     const instanceMode = (
       instance as Instance & { instance_mode?: InstanceMode }
     ).instance_mode;
-    return instanceMode === "pro" || (!instanceMode && instance.runtime_type !== "gateway");
+    return (
+      instanceMode === "pro" ||
+      (!instanceMode && instance.runtime_type !== "gateway")
+    );
   };
 
   const renderInstanceModeSelector = () => (
@@ -599,8 +628,7 @@ const CreateInstancePage: React.FC = () => {
                     instance_mode: mode.id,
                     ...(fallbackType
                       ? {
-                          type:
-                            fallbackType.id as CreateInstanceRequest["type"],
+                          type: fallbackType.id as CreateInstanceRequest["type"],
                           os_type: fallbackType.defaultOs,
                           os_version: fallbackType.defaultVersion,
                           storage_class: "",
@@ -682,9 +710,7 @@ const CreateInstancePage: React.FC = () => {
         const items = await skillHubService.listAttachable();
         const activeSkills = items.filter((item) => item.status === "active");
         const attachableSkills = activeSkills.filter(
-          (item) =>
-            item.risk_level !== "medium" &&
-            item.risk_level !== "high",
+          (item) => item.risk_level !== "medium" && item.risk_level !== "high",
         );
         setAvailableSkills(attachableSkills);
         setSkillInventorySummary({
@@ -1014,12 +1040,16 @@ const CreateInstancePage: React.FC = () => {
     instances: instances.length,
     cpu: instances.reduce(
       (sum, instance) =>
-        instanceUsesDedicatedResources(instance) ? sum + instance.cpu_cores : sum,
+        instanceUsesDedicatedResources(instance)
+          ? sum + instance.cpu_cores
+          : sum,
       0,
     ),
     memory: instances.reduce(
       (sum, instance) =>
-        instanceUsesDedicatedResources(instance) ? sum + instance.memory_gb : sum,
+        instanceUsesDedicatedResources(instance)
+          ? sum + instance.memory_gb
+          : sum,
       0,
     ),
     storage: instances.reduce(
@@ -1053,8 +1083,7 @@ const CreateInstancePage: React.FC = () => {
                 next: usedResources.cpu + formData.cpu_cores,
                 max: quota.max_cpu_cores,
                 exceeded:
-                  usedResources.cpu + formData.cpu_cores >
-                  quota.max_cpu_cores,
+                  usedResources.cpu + formData.cpu_cores > quota.max_cpu_cores,
               },
               {
                 key: "memory",
@@ -1163,6 +1192,16 @@ const CreateInstancePage: React.FC = () => {
         <img
           src="/hermes.png"
           alt="Hermes"
+          className="h-10 w-10 object-contain"
+        />
+      );
+    }
+
+    if (typeId === "opencode") {
+      return (
+        <img
+          src="/opencode.png"
+          alt="OpenCode"
           className="h-10 w-10 object-contain"
         />
       );
@@ -1574,7 +1613,9 @@ const CreateInstancePage: React.FC = () => {
                           <button
                             key={optionKey}
                             type="button"
-                            onClick={() => setSelectedRuntimeImageKey(optionKey)}
+                            onClick={() =>
+                              setSelectedRuntimeImageKey(optionKey)
+                            }
                             className={`rounded-[20px] border p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-[0_24px_56px_-42px_rgba(72,44,24,0.55)] ${
                               selected
                                 ? "border-indigo-500 bg-white ring-2 ring-indigo-500"
@@ -1587,13 +1628,19 @@ const CreateInstancePage: React.FC = () => {
                                   <h4 className="text-sm font-semibold text-gray-900">
                                     {item.display_name}
                                   </h4>
-                                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                                    normalizeRuntimeImageType(item.runtime_type) === "gateway"
-                                      ? "bg-emerald-50 text-emerald-700"
-                                      : "bg-indigo-50 text-indigo-700"
-                                  }`}>
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                                      normalizeRuntimeImageType(
+                                        item.runtime_type,
+                                      ) === "gateway"
+                                        ? "bg-emerald-50 text-emerald-700"
+                                        : "bg-indigo-50 text-indigo-700"
+                                    }`}
+                                  >
                                     {t(
-                                      normalizeRuntimeImageType(item.runtime_type) === "gateway"
+                                      normalizeRuntimeImageType(
+                                        item.runtime_type,
+                                      ) === "gateway"
                                         ? "instances.runtimeTypeGateway"
                                         : "instances.runtimeTypeDesktop",
                                     )}
@@ -1608,7 +1655,9 @@ const CreateInstancePage: React.FC = () => {
                                 </p>
                               </div>
                               {selected && (
-                                <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-700">\u2713</span>
+                                <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-700">
+                                  \u2713
+                                </span>
                               )}
                             </div>
                             <p className="mt-3 break-all rounded-2xl bg-[#f8f5f2] px-3 py-2 font-mono text-xs text-[#5f5957]">
@@ -1695,11 +1744,7 @@ const CreateInstancePage: React.FC = () => {
                               {getPresetLabel(t, key, config.name)}
                             </h3>
                             <p className="mt-1 text-sm text-gray-500">
-                              {getPresetDescription(
-                                t,
-                                key,
-                                config.description,
-                              )}
+                              {getPresetDescription(t, key, config.description)}
                             </p>
                             <div className="mt-2 text-sm text-gray-600">
                               {t("instances.resourcePresetSummary", {
@@ -1789,8 +1834,7 @@ const CreateInstancePage: React.FC = () => {
                                 onChange={(e) =>
                                   setFormData((current) => ({
                                     ...current,
-                                    memory_gb:
-                                      parseInt(e.target.value) || 1,
+                                    memory_gb: parseInt(e.target.value) || 1,
                                   }))
                                 }
                                 className="mt-1 h-9 w-full rounded-xl border border-gray-200 bg-white px-2 text-sm font-medium text-gray-900 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"

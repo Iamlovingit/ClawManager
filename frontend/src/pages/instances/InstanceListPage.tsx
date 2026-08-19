@@ -190,7 +190,7 @@ const InstanceListPage: React.FC = () => {
   const [batchCreateCount, setBatchCreateCount] = useState(3);
   const [batchCreateStartIndex, setBatchCreateStartIndex] = useState(1);
   const [batchCreateType, setBatchCreateType] = useState<
-    "openclaw" | "hermes" | "deepseek-harness"
+    "openclaw" | "hermes" | "opencode" | "deepseek-harness"
   >("openclaw");
   const [batchCreateImageKey, setBatchCreateImageKey] = useState("");
   const [runtimeImageSettings, setRuntimeImageSettings] = useState<SystemImageSetting[]>([]);
@@ -572,6 +572,7 @@ const InstanceListPage: React.FC = () => {
                         event.target.value as
                           | "openclaw"
                           | "hermes"
+                          | "opencode"
                           | "deepseek-harness",
                       )
                     }
@@ -579,6 +580,7 @@ const InstanceListPage: React.FC = () => {
                   >
                     <option value="openclaw">OpenClaw</option>
                     <option value="hermes">Hermes</option>
+                    <option value="opencode">OpenCode</option>
                     <option value="deepseek-harness">DeepSeek Harness</option>
                   </select>
                 </label>

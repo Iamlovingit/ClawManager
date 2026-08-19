@@ -79,6 +79,7 @@ export default function InstanceSessionUsagePanel({
   const supported =
     instanceType === "openclaw" ||
     instanceType === "hermes" ||
+    instanceType === "opencode" ||
     instanceType === "deepseek-harness";
   const since = useMemo(() => resolveSessionUsageSince(timeRange), [timeRange]);
 

@@ -14,6 +14,7 @@ export interface Instance {
     | "custom"
     | "webtop"
     | "hermes"
+    | "opencode"
     | "workbuddy"
     | "deepseek-harness";
   runtime_type: "desktop" | "shell" | "gateway";
@@ -49,6 +50,8 @@ export interface Instance {
 export type V2InstanceType =
   | "openclaw"
   | "hermes"
+  | "opencode"
+  | "workbuddy"
   | "deepseek-harness";
 
 export function formatInstanceType(type: string): string {
@@ -57,13 +60,16 @@ export function formatInstanceType(type: string): string {
       return "OpenClaw";
     case "hermes":
       return "Hermes";
+    case "opencode":
+      return "OpenCode";
+    case "workbuddy":
+      return "Workbuddy";
     case "deepseek-harness":
       return "DeepSeek Harness";
     default:
       return type;
   }
 }
-
 export type InstanceMode = "lite" | "pro";
 export type InstanceAvailability = "available" | "starting" | "unavailable";
 
@@ -199,6 +205,7 @@ export interface CreateInstanceRequest {
     | "custom"
     | "webtop"
     | "hermes"
+    | "opencode"
     | "workbuddy"
     | "deepseek-harness";
   mode?: InstanceMode;
@@ -338,6 +345,14 @@ export const INSTANCE_TYPES: InstanceType[] = [
     description: "Hermes runtime built on the webtop desktop base",
     icon: "hermes",
     defaultOs: "hermes",
+    defaultVersion: "latest",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode Runtime",
+    description: "OpenCode coding agent runtime",
+    icon: "opencode",
+    defaultOs: "opencode",
     defaultVersion: "latest",
   },
   {

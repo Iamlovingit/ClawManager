@@ -145,7 +145,7 @@ type InstanceHandler struct {
 }
 
 // NewInstanceHandler creates a new instance handler
-func NewInstanceHandler(instanceService services.InstanceService, instanceAgentService services.InstanceAgentService, runtimeStatusService services.InstanceRuntimeStatusService, instanceCommandService services.InstanceCommandService, instanceConfigRevisionService services.InstanceConfigRevisionService, openClawConfigService services.OpenClawConfigService, skillService services.SkillService, externalAccessService services.InstanceExternalAccessService, aiObservabilityService services.AIObservabilityService, proxyOptions ...services.InstanceProxyServiceOption) *InstanceHandler {
+func NewInstanceHandler(instanceService services.InstanceService, instanceAgentService services.InstanceAgentService, runtimeStatusService services.InstanceRuntimeStatusService, instanceCommandService services.InstanceCommandService, instanceConfigRevisionService services.InstanceConfigRevisionService, openClawConfigService services.OpenClawConfigService, skillService services.SkillService, externalAccessService services.InstanceExternalAccessService, aiObservabilityService services.AIObservabilityService, shellService *services.InstanceShellService, proxyOptions ...services.InstanceProxyServiceOption) *InstanceHandler {
 	accessService := services.NewInstanceAccessService()
 	return &InstanceHandler{
 		instanceService:               instanceService,
@@ -155,7 +155,7 @@ func NewInstanceHandler(instanceService services.InstanceService, instanceAgentS
 		instanceConfigRevisionService: instanceConfigRevisionService,
 		accessService:                 accessService,
 		proxyService:                  services.NewInstanceProxyService(accessService, proxyOptions...),
-		shellService:                  services.NewInstanceShellService(),
+		shellService:                  shellService,
 		openClawTransferService:       services.NewOpenClawTransferService(),
 		openClawConfigService:         openClawConfigService,
 		skillService:                  skillService,
@@ -204,7 +204,7 @@ type ExternalAccessRequest struct {
 type CreateInstanceRequest struct {
 	Name                 string                       `json:"name" binding:"required,min=3,max=50"`
 	Description          *string                      `json:"description,omitempty"`
-	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes workbuddy deepseek-harness"`
+	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes opencode workbuddy deepseek-harness"`
 	Mode                 string                       `json:"mode" binding:"omitempty,oneof=lite pro"`
 	InstanceMode         string                       `json:"instance_mode" binding:"omitempty,oneof=lite pro"`
 	RuntimeType          string                       `json:"runtime_type" binding:"omitempty,oneof=gateway desktop shell"`
@@ -581,8 +581,8 @@ func buildLiteBatchCreateRequests(req BatchCreateLiteInstancesRequest) ([]servic
 	if template.Type == "" {
 		template.Type = "openclaw"
 	}
-	if template.Type != "openclaw" && template.Type != "hermes" && template.Type != services.RuntimeTypeDeepSeekHarness {
-		return nil, nil, fmt.Errorf("lite batch create supports openclaw, hermes, or deepseek-harness instances")
+	if template.Type != "openclaw" && template.Type != "hermes" && template.Type != services.RuntimeTypeOpenCode && template.Type != services.RuntimeTypeDeepSeekHarness {
+		return nil, nil, fmt.Errorf("lite batch create supports openclaw, hermes, opencode, or deepseek-harness instances")
 	}
 	if template.CPUCores <= 0 {
 		template.CPUCores = 2
@@ -1133,7 +1133,7 @@ func (h *InstanceHandler) GetRuntimeDetails(c *gin.Context) {
 		Commands: commands,
 	}
 	if h.aiObservabilityService != nil && instance != nil &&
-		(instance.Type == "openclaw" || instance.Type == "hermes" || instance.Type == services.RuntimeTypeDeepSeekHarness) {
+		(instance.Type == "openclaw" || instance.Type == "hermes" || instance.Type == services.RuntimeTypeOpenCode || instance.Type == services.RuntimeTypeDeepSeekHarness) {
 		var systemInfo map[string]interface{}
 		if runtime != nil {
 			systemInfo = runtime.SystemInfo
@@ -1567,8 +1567,8 @@ func (h *InstanceHandler) StreamShell(c *gin.Context) {
 		return
 	}
 
-	if !strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "shell") {
-		utils.Error(c, http.StatusBadRequest, "Shell access is only available for shell runtime instances")
+	if !strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "shell") && !services.IsOpenCodeLiteTUIInstance(instance) {
+		utils.Error(c, http.StatusBadRequest, "Shell access is only available for shell or OpenCode Lite instances")
 		return
 	}
 
@@ -1577,7 +1577,7 @@ func (h *InstanceHandler) StreamShell(c *gin.Context) {
 		return
 	}
 
-	if err := h.shellService.Stream(c.Request.Context(), instance.UserID, instance.ID, c.Writer, c.Request); err != nil {
+	if err := h.shellService.Stream(c.Request.Context(), instance, c.Writer, c.Request); err != nil {
 		if !c.Writer.Written() {
 			utils.HandleError(c, err)
 			return
@@ -1918,7 +1918,7 @@ func (h *InstanceHandler) RefreshInstanceSkills(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if instance.Type != "openclaw" && instance.Type != "hermes" && instance.Type != services.RuntimeTypeDeepSeekHarness {
+	if instance.Type != "openclaw" && instance.Type != "hermes" && instance.Type != services.RuntimeTypeOpenCode && instance.Type != services.RuntimeTypeDeepSeekHarness {
 		utils.Error(c, http.StatusBadRequest, "skill inventory sync is only available for managed runtime instances")
 		return
 	}

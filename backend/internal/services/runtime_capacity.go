@@ -9,6 +9,7 @@ import (
 const (
 	RuntimeTypeOpenClaw        = "openclaw"
 	RuntimeTypeHermes          = "hermes"
+	RuntimeTypeOpenCode        = "opencode"
 	RuntimeTypeDeepSeekHarness = "deepseek-harness"
 
 	InstanceModeLite = "lite"
@@ -52,6 +53,8 @@ func NormalizeV2RuntimeType(instanceType string) (string, bool) {
 		return RuntimeTypeOpenClaw, true
 	case RuntimeTypeHermes:
 		return RuntimeTypeHermes, true
+	case RuntimeTypeOpenCode:
+		return RuntimeTypeOpenCode, true
 	case RuntimeTypeDeepSeekHarness:
 		return RuntimeTypeDeepSeekHarness, true
 	default:

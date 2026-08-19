@@ -15,6 +15,7 @@ var orderedSystemImageTypes = []string{
 	"ubuntu",
 	"webtop",
 	"hermes",
+	"opencode",
 	"workbuddy",
 	"debian",
 	"centos",
@@ -27,6 +28,7 @@ var supportedSystemImageTypes = map[string]string{
 	"ubuntu":                   "Ubuntu Desktop",
 	"webtop":                   "Webtop Desktop",
 	"hermes":                   "Hermes Pro",
+	"opencode":                 "OpenCode Pro",
 	"workbuddy":                "Workbuddy Pro",
 	"debian":                   "Debian Desktop",
 	"centos":                   "CentOS Desktop",
@@ -39,6 +41,7 @@ var defaultSystemImageSettings = map[string]string{
 	"ubuntu":                   "lscr.io/linuxserver/webtop:ubuntu-xfce",
 	"webtop":                   "lscr.io/linuxserver/webtop:ubuntu-xfce",
 	"hermes":                   "ghcr.io/yuan-lab-llm/agentsruntime/hermes:latest",
+	"opencode":                 "ghcr.io/yuan-lab-llm/agentsruntime/opencode:latest",
 	"workbuddy":                "ghcr.io/yuan-lab-llm/agentsruntime/workbuddy-linux:latest",
 	"debian":                   "docker.io/clawreef/debian-desktop:12",
 	"centos":                   "docker.io/clawreef/centos-desktop:9",
@@ -51,6 +54,7 @@ var defaultGatewaySystemImageSettings = map[string]string{
 	"ubuntu":                   "ubuntu:22.04",
 	"webtop":                   "ubuntu:22.04",
 	"hermes":                   "ghcr.io/yuan-lab-llm/agentsruntime/hermes-lite:latest",
+	"opencode":                 "ghcr.io/yuan-lab-llm/agentsruntime/opencode-lite:latest",
 	"debian":                   "debian:12",
 	"centos":                   "quay.io/centos/centos:stream9",
 	"custom":                   "registry.example.com/your-custom-shell-image:latest",
@@ -60,6 +64,7 @@ var defaultEnabledSystemImageTypes = map[string]bool{
 	"openclaw":                 true,
 	"ubuntu":                   true,
 	"hermes":                   true,
+	"opencode":                 true,
 	"workbuddy":                true,
 	RuntimeTypeDeepSeekHarness: true,
 }
@@ -67,6 +72,7 @@ var defaultEnabledSystemImageTypes = map[string]bool{
 var defaultEnabledGatewaySystemImageTypes = map[string]bool{
 	"openclaw":                 true,
 	"hermes":                   true,
+	"opencode":                 true,
 	RuntimeTypeDeepSeekHarness: true,
 }
 
@@ -330,6 +336,15 @@ func displayNameForSystemImagePreset(instanceType, runtimeType string) string {
 			return "DeepSeek Harness Lite"
 		}
 		return "DeepSeek Harness Pro"
+	}
+	if instanceType == "opencode" {
+		if normalizedRuntimeType == "gateway" {
+			return "OpenCode Lite"
+		}
+		return "OpenCode Pro"
+	}
+	if instanceType == "workbuddy" {
+		return "Workbuddy Pro"
 	}
 	return displayNameForSystemImageType(instanceType)
 }
