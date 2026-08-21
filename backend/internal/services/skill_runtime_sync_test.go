@@ -138,12 +138,10 @@ func TestDiscoverRuntimeSkillDirectoriesFlatAndNested(t *testing.T) {
 	}
 }
 
-func TestRuntimeSkillInstallRootOpenClawHermesAndOpenCode(t *testing.T) {
+func TestRuntimeSkillInstallRootOpenClawAndHermes(t *testing.T) {
 	workspace := "/workspaces/demo/instance-1"
 	hermes := &models.Instance{Type: RuntimeTypeHermes, WorkspacePath: &workspace}
 	openclaw := &models.Instance{Type: RuntimeTypeOpenClaw, WorkspacePath: &workspace}
-	opencodeLite := &models.Instance{Type: RuntimeTypeOpenCode, InstanceMode: InstanceModeLite, RuntimeType: RuntimeBackendGateway, WorkspacePath: &workspace}
-	opencodePro := &models.Instance{Type: RuntimeTypeOpenCode, InstanceMode: InstanceModePro, RuntimeType: RuntimeBackendDesktop, WorkspacePath: &workspace}
 
 	hermesRoot := runtimeSkillInstallRoot(hermes)
 	openclawRoot := runtimeSkillInstallRoot(openclaw)
@@ -153,19 +151,23 @@ func TestRuntimeSkillInstallRootOpenClawHermesAndOpenCode(t *testing.T) {
 	if openclawRoot != filepath.Join(workspace, "home", ".openclaw", "workspace", "skills") {
 		t.Fatalf("openclaw root = %q", openclawRoot)
 	}
-	if got := runtimeSkillInstallRoot(opencodeLite); got != filepath.Join(workspace, "home", ".opencode", "skills") {
-		t.Fatalf("OpenCode Lite root = %q", got)
-	}
-	if got := runtimeSkillInstallRoot(opencodePro); got != filepath.Join(workspace, "workspace", ".opencode", "skills") {
-		t.Fatalf("OpenCode Pro root = %q", got)
-	}
 }
 
-func TestSupportsServerWorkspaceSkillScanOpenCode(t *testing.T) {
-	workspace := "/workspaces/demo/instance-1"
-	instance := &models.Instance{Type: RuntimeTypeOpenCode, InstanceMode: InstanceModePro, RuntimeType: RuntimeBackendDesktop, WorkspacePath: &workspace}
-	if !SupportsServerWorkspaceSkillScan(instance) {
-		t.Fatal("expected OpenCode Pro to support server workspace skill sync")
+func TestRuntimeSkillInstallRootOpenCodeLite(t *testing.T) {
+	workspace := "/workspaces/opencode/user-45/instance-91"
+	opencode := &models.Instance{
+		Type:          RuntimeTypeOpenCode,
+		RuntimeType:   RuntimeBackendGateway,
+		InstanceMode:  InstanceModeLite,
+		WorkspacePath: &workspace,
+	}
+
+	want := filepath.Join(workspace, "home", ".config", "opencode", "skills")
+	if got := runtimeSkillInstallRoot(opencode); got != want {
+		t.Fatalf("OpenCode skill root = %q, want %q", got, want)
+	}
+	if !SupportsServerWorkspaceSkillScan(opencode) {
+		t.Fatal("OpenCode Lite must support workspace skill scanning")
 	}
 }
 
@@ -377,57 +379,6 @@ func TestSyncAgentSkillsReusesUploadedSkillOnWorkspaceScan(t *testing.T) {
 	}
 }
 
-func TestSyncAgentSkillsKeepsHubVersionBaselineWhenInstanceCopyChanges(t *testing.T) {
-	installedHash := "abc123def456789012345678901234"
-	changedHash := "def456abc123789012345678901234"
-	versionID := 1
-	stub := &provenanceCaptureRepoStub{
-		capturingSkillRepoStub: capturingSkillRepoStub{
-			nextSkillID: 1,
-			skillRepoStub: skillRepoStub{
-				skills: map[int]*models.Skill{
-					10: {ID: 10, UserID: 1, SkillKey: "customer-manager", Name: "Customer Manager", SourceType: skillSourceUploaded, Status: skillStatusActive, CurrentVersionID: &versionID},
-				},
-				blobs: map[int]*models.SkillBlob{
-					1: {ID: 1, ContentHash: installedHash, ObjectKey: "hub/customer-manager.zip", ScanStatus: "completed"},
-				},
-				versions: map[int]*models.SkillVersion{
-					1: {ID: 1, SkillID: 10, BlobID: 1, VersionNo: 1},
-				},
-				instanceSkills: []models.InstanceSkill{
-					{InstanceID: 1, SkillID: 10, SkillVersionID: &versionID, SourceType: "injected_by_clawmanager", Status: "active", ObservedHash: &installedHash},
-				},
-			},
-		},
-	}
-	instRepo := &importTestInstanceRepo{instances: map[int]*models.Instance{
-		1: {ID: 1, UserID: 1, Type: RuntimeTypeHermes, InstanceMode: InstanceModeLite, RuntimeType: RuntimeBackendGateway},
-	}}
-	svc := &skillService{repo: stub, instanceRepo: instRepo, commandService: &noopInstanceCommandService{}}
-
-	if err := svc.SyncAgentSkills(1, AgentSkillInventoryReportRequest{Mode: "full", Skills: []AgentSkillRecord{{
-		Identifier: "customer-manager", ContentMD5: changedHash, Source: "discovered_in_instance",
-	}}}); err != nil {
-		t.Fatalf("SyncAgentSkills() error = %v", err)
-	}
-	if len(stub.upserted) != 1 {
-		t.Fatalf("upserted %d instance skills, want 1", len(stub.upserted))
-	}
-	updated := stub.upserted[0]
-	if updated.SkillVersionID == nil || *updated.SkillVersionID != versionID {
-		t.Fatalf("SkillVersionID = %v, want original version %d", updated.SkillVersionID, versionID)
-	}
-	if updated.ObservedHash == nil || *updated.ObservedHash != changedHash {
-		t.Fatalf("ObservedHash = %v, want changed hash %q", updated.ObservedHash, changedHash)
-	}
-	if got := stub.blobs[1].ContentHash; got != installedHash {
-		t.Fatalf("installed blob hash = %q, want unchanged %q", got, installedHash)
-	}
-	if !isInstanceSkillContentDiverged(updated.ObservedHash, installedHash) {
-		t.Fatal("expected modified Hub-installed skill to be marked as diverged")
-	}
-}
-
 type recordingSkillResyncAgentClient struct {
 	fakeRuntimeAgentClient
 	calls []struct {
@@ -534,6 +485,40 @@ func TestRequestLiteSkillInventorySyncUsesIncrementalWhenAgentResyncFollows(t *t
 	}
 	if cmdRepo.commands[0].Status != instanceCommandStatusPending {
 		t.Fatalf("command status = %q, want pending until agent inventory arrives", cmdRepo.commands[0].Status)
+	}
+}
+
+func TestRequestLiteSkillInventorySyncUsesOpenCodeWorkspaceAsAuthority(t *testing.T) {
+	workspace := t.TempDir()
+	skillRoot := filepath.Join(workspace, "home", ".config", "opencode", "skills", "ppt-generator")
+	if err := os.MkdirAll(skillRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillRoot, "SKILL.md"), []byte("---\nname: ppt-generator\ndescription: test\n---\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	stub := &capturingSkillRepoStub{skillRepoStub: skillRepoStub{
+		skills: map[int]*models.Skill{
+			10: {ID: 10, UserID: 1, SkillKey: "ppt-generator", Name: "ppt-generator", SourceType: skillSourceUploaded, Status: skillStatusActive},
+		},
+		blobs: map[int]*models.SkillBlob{}, versions: map[int]*models.SkillVersion{},
+		instanceSkills: []models.InstanceSkill{{InstanceID: 1, SkillID: 10, Status: "active", SourceType: "injected_by_clawmanager"}},
+	}}
+	instRepo := &importTestInstanceRepo{instances: map[int]*models.Instance{
+		1: {ID: 1, UserID: 1, Type: RuntimeTypeOpenCode, InstanceMode: InstanceModeLite, RuntimeType: RuntimeBackendGateway, WorkspacePath: &workspace, RuntimeGeneration: 1},
+	}}
+	agent := &recordingSkillResyncAgentClient{}
+	svc := &skillService{repo: stub, instanceRepo: instRepo, commandService: &noopInstanceCommandService{}}
+	svc.ConfigureRuntimeSkillSync(newFakeRuntimeBindingRepo(), &fakeRuntimePodRepo{}, agent)
+
+	if err := svc.RequestLiteSkillInventorySync(1); err != nil {
+		t.Fatalf("RequestLiteSkillInventorySync() error = %v", err)
+	}
+	if len(agent.calls) != 0 {
+		t.Fatalf("OpenCode agent resync calls = %#v, want none", agent.calls)
+	}
+	if len(stub.instanceSkills) != 1 || stub.instanceSkills[0].Status != "active" {
+		t.Fatalf("instance skills = %#v, want active workspace skill", stub.instanceSkills)
 	}
 }
 
