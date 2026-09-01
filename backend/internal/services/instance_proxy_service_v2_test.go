@@ -116,6 +116,38 @@ func TestInstanceProxyServiceNormalizesDeepSeekHarnessDedicatedOrigin(t *testing
 	}
 }
 
+func TestInstanceProxyServicePreservesDeepSeekHarnessPluginBatchRawQuery(t *testing.T) {
+	instanceToken := "igt_deepseek_harness_instance"
+	const wantRawQuery = "?@deepseek-ai/dsh-client-modules/client.js&rev=cddf5581d5d5"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/plugins/" {
+			t.Fatalf("upstream path = %q", r.URL.Path)
+		}
+		if r.URL.RawQuery != wantRawQuery {
+			t.Fatalf("upstream raw query = %q, want %q", r.URL.RawQuery, wantRawQuery)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+instanceToken {
+			t.Fatalf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = w.Write([]byte("export default true"))
+	}))
+	defer upstream.Close()
+
+	service, token := newDeepSeekHarnessV2ProxyTestService(t, upstream.URL, 137, instanceToken)
+	service.httpClient = upstream.Client()
+	requestURL := "/api/v1/instances/137/proxy/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=cddf5581d5d5&token=" + url.QueryEscape(token.Token)
+	req := httptest.NewRequest(http.MethodGet, requestURL, nil)
+	req.Header.Set(DedicatedRuntimeOriginHeader, RuntimeTypeDeepSeekHarness)
+	rec := httptest.NewRecorder()
+	if err := service.ProxyRequest(req.Context(), 137, token.Token, rec, req); err != nil {
+		t.Fatalf("ProxyRequest returned error: %v", err)
+	}
+	if rec.Code != http.StatusOK || rec.Body.String() != "export default true" {
+		t.Fatalf("proxy response = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestInstanceProxyServiceNormalizesDeepSeekHarnessDedicatedWebSocketOrigin(t *testing.T) {
 	instanceToken := "igt_deepseek_harness_instance"
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}

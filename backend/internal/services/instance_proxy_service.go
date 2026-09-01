@@ -161,11 +161,20 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	bootstrapPath := stripInstanceProxyPrefix(targetPath, instanceID)
 
 	// Copy query parameters, excluding ClawManager-owned proxy/gateway tokens.
+	// DSH's plugin loader uses a significant leading '?' inside RawQuery
+	// (`/plugins/??module&rev=...`). Parsing and re-encoding that query changes
+	// the module key and makes the upstream loader return 404.
+	preserveDeepSeekRawQuery := dedicatedRuntimeOrigin && isDeepSeekHarnessRuntimeType(accessToken.InstanceType)
 	queryParams := r.URL.Query()
-	s.removeProxyAccessTokenQuery(queryParams, token, managedGatewayToken)
-	openCodeProjectSearchRewritten := s.rewriteOpenCodeProjectSearchDirectory(ctx, instanceID, accessToken.InstanceType, bootstrapPath, queryParams)
-	if len(queryParams) > 0 {
-		targetURL.RawQuery = queryParams.Encode()
+	openCodeProjectSearchRewritten := false
+	if preserveDeepSeekRawQuery {
+		targetURL.RawQuery = s.filterProxyAccessTokenRawQuery(r.URL.RawQuery, token, managedGatewayToken)
+	} else {
+		s.removeProxyAccessTokenQuery(queryParams, token, managedGatewayToken)
+		openCodeProjectSearchRewritten = s.rewriteOpenCodeProjectSearchDirectory(ctx, instanceID, accessToken.InstanceType, bootstrapPath, queryParams)
+		if len(queryParams) > 0 {
+			targetURL.RawQuery = queryParams.Encode()
+		}
 	}
 
 	// OpenCode uses a long-lived SSE stream at /global/event to initialize and
@@ -403,10 +412,15 @@ func (s *InstanceProxyService) ProxyWebSocket(ctx context.Context, instanceID in
 	skipManagedWSAuth := hermesLite && isHermesDashboardTicketWebSocket(upstreamPath, r.URL.Query())
 
 	// Copy query parameters, excluding ClawManager-owned proxy/gateway tokens.
+	// Preserve DSH's significant leading '?' in plugin-loader batch queries.
 	queryParams := r.URL.Query()
-	s.removeProxyAccessTokenQuery(queryParams, token, managedGatewayToken)
-	if len(queryParams) > 0 {
-		targetURL.RawQuery = queryParams.Encode()
+	if dedicatedRuntimeOrigin && isDeepSeekHarnessRuntimeType(accessToken.InstanceType) {
+		targetURL.RawQuery = s.filterProxyAccessTokenRawQuery(r.URL.RawQuery, token, managedGatewayToken)
+	} else {
+		s.removeProxyAccessTokenQuery(queryParams, token, managedGatewayToken)
+		if len(queryParams) > 0 {
+			targetURL.RawQuery = queryParams.Encode()
+		}
 	}
 
 	upstreamHeader := http.Header{}
@@ -1567,6 +1581,31 @@ func (s *InstanceProxyService) removeProxyAccessTokenQuery(query url.Values, acc
 		return
 	}
 	query["token"] = filtered
+}
+
+// filterProxyAccessTokenRawQuery removes only ClawManager-owned token fields
+// while preserving every other raw query segment byte-for-byte. DeepSeek
+// Harness relies on a leading '?' in its plugin batch key, which url.Values
+// would percent-encode and normalize.
+func (s *InstanceProxyService) filterProxyAccessTokenRawQuery(rawQuery, accessToken, managedGatewayToken string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	segments := strings.Split(rawQuery, "&")
+	kept := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		rawKey, rawValue, hasValue := strings.Cut(segment, "=")
+		key, err := url.QueryUnescape(rawKey)
+		if err != nil || key != "token" || !hasValue {
+			kept = append(kept, segment)
+			continue
+		}
+		value, err := url.QueryUnescape(rawValue)
+		if err != nil || !s.shouldRemoveProxyTokenQueryValue(value, accessToken, managedGatewayToken) {
+			kept = append(kept, segment)
+		}
+	}
+	return strings.Join(kept, "&")
 }
 
 func (s *InstanceProxyService) shouldRemoveProxyTokenQueryValue(value, accessToken, managedGatewayToken string) bool {
