@@ -20,6 +20,7 @@ import (
 type LLMModelService interface {
 	ListModels() ([]models.LLMModel, error)
 	ListActiveModels() ([]models.LLMModel, error)
+	ListExpandedActiveModels() ([]models.LLMModel, error)
 	SaveModel(req SaveLLMModelRequest) (*models.LLMModel, error)
 	DeleteModel(id int) error
 	DiscoverProviderModels(req DiscoverLLMModelsRequest) ([]DiscoveredLLMModel, error)
@@ -63,6 +64,7 @@ type llmModelService struct {
 	repo             repository.LLMModelRepository
 	httpClient       *http.Client
 	secretRefService SecretRefService
+	discoveryCache   *providerDiscoveryCache
 }
 
 var versionSegmentPattern = regexp.MustCompile(`(?i)^v\d+(?:[a-z0-9._-]*)?$`)
@@ -72,6 +74,7 @@ func NewLLMModelService(repo repository.LLMModelRepository) LLMModelService {
 	return &llmModelService{
 		repo:             repo,
 		secretRefService: NewSecretRefService(),
+		discoveryCache:   newProviderDiscoveryCache(),
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -213,6 +216,7 @@ func (s *llmModelService) SaveModel(req SaveLLMModelRequest) (*models.LLMModel, 
 	if err := s.repo.Save(model); err != nil {
 		return nil, fmt.Errorf("failed to save llm model: %w", err)
 	}
+	s.resetProviderDiscoveryCache()
 
 	return model, nil
 }
@@ -238,6 +242,7 @@ func (s *llmModelService) DeleteModel(id int) error {
 	if err := s.repo.Delete(id); err != nil {
 		return fmt.Errorf("failed to delete llm model: %w", err)
 	}
+	s.resetProviderDiscoveryCache()
 	return nil
 }
 

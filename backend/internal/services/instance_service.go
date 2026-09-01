@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -237,6 +236,7 @@ type instanceService struct {
 	instanceRepo          repository.InstanceRepository
 	quotaRepo             repository.QuotaRepository
 	llmModelRepo          repository.LLMModelRepository
+	expandedModelCatalog  ExpandedLLMModelCatalog
 	openClawConfigService OpenClawConfigService
 	allowPrivilegedPods   bool
 	runtimePodRepo        repository.RuntimePodRepository
@@ -258,18 +258,17 @@ const (
 type gatewayTokenAliasRecorder interface {
 	UpsertGatewayTokenAlias(ctx context.Context, instanceID int, accessToken string, expiresAt time.Time) error
 }
-type gatewayModelInjection struct {
-	defaultModel         string
-	modelsJSON           string
-	reasoningJSON        string
-	reasoningControlJSON string
-}
-
 type InstanceServiceOption func(*instanceService)
 
 func WithPrivilegedInstancePods(allowed bool) InstanceServiceOption {
 	return func(s *instanceService) {
 		s.allowPrivilegedPods = allowed
+	}
+}
+
+func WithExpandedLLMModelCatalog(catalog ExpandedLLMModelCatalog) InstanceServiceOption {
+	return func(s *instanceService) {
+		s.expandedModelCatalog = catalog
 	}
 }
 
@@ -1124,6 +1123,7 @@ func (s *instanceService) buildGatewayEnv(instance *models.Instance) (map[string
 		"CLAWMANAGER_LLM_BASE_URL":          baseURL,
 		"CLAWMANAGER_LLM_API_KEY":           token,
 		"CLAWMANAGER_LLM_MODEL":             modelInjection.modelsJSON,
+		"CLAWMANAGER_LLM_PROVIDER_MODELS":   modelInjection.providerModelsJSON,
 		"CLAWMANAGER_LLM_REASONING":         modelInjection.reasoningJSON,
 		"CLAWMANAGER_LLM_REASONING_CONTROL": modelInjection.reasoningControlJSON,
 		"CLAWMANAGER_LLM_PROVIDER":          "openai-compatible",
@@ -1136,7 +1136,7 @@ func (s *instanceService) buildGatewayEnv(instance *models.Instance) (map[string
 	if strings.EqualFold(strings.TrimSpace(instance.Type), RuntimeTypeOpenCode) {
 		env["OPENCODE_SERVER_PASSWORD"] = token
 		env["OPENCODE_SERVER_USERNAME"] = "opencode"
-		configContent, err := buildOpenCodeGatewayConfig(modelInjection.modelsJSON)
+		configContent, err := buildOpenCodeGatewayConfig(modelInjection.providerModelsJSON)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build opencode gateway config: %w", err)
 		}
@@ -1147,50 +1147,6 @@ func (s *instanceService) buildGatewayEnv(instance *models.Instance) (map[string
 		env["OPENCODE_CONFIG_CONTENT"] = configContent
 	}
 	return env, nil
-}
-
-// buildOpenCodeGatewayConfig translates ClawManager's active model catalogue
-// into OpenCode's custom-provider format. The gateway's "auto" model is always
-// included, so a newly-created Lite instance is usable even when the active
-// catalogue contains only aliases added after the runtime image was built.
-func buildOpenCodeGatewayConfig(modelsJSON string) (string, error) {
-	var modelIDs []string
-	if err := json.Unmarshal([]byte(modelsJSON), &modelIDs); err != nil {
-		return "", fmt.Errorf("invalid gateway model catalogue: %w", err)
-	}
-
-	models := make(map[string]map[string]string, len(modelIDs))
-	for _, modelID := range modelIDs {
-		modelID = strings.TrimSpace(modelID)
-		if modelID == "" {
-			continue
-		}
-		models[modelID] = map[string]string{"name": modelID}
-	}
-	if _, ok := models["auto"]; !ok {
-		models["auto"] = map[string]string{"name": "auto"}
-	}
-
-	config := map[string]interface{}{
-		"$schema": "https://opencode.ai/config.json",
-		"model":   "clawmanager/auto",
-		"provider": map[string]interface{}{
-			"clawmanager": map[string]interface{}{
-				"npm":  "@ai-sdk/openai-compatible",
-				"name": "ClawManager AI Gateway",
-				"options": map[string]string{
-					"baseURL": "{env:CLAWMANAGER_LLM_BASE_URL}",
-					"apiKey":  "{env:CLAWMANAGER_LLM_API_KEY}",
-				},
-				"models": models,
-			},
-		},
-	}
-	raw, err := json.Marshal(config)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
 }
 
 func (s *instanceService) BuildGatewayEnv(instance *models.Instance) (map[string]string, error) {
@@ -1446,67 +1402,6 @@ fi
 chown -R 1000:1000 "$target" || true`,
 		},
 	}
-}
-
-func (s *instanceService) resolveGatewayModelInjection() (*gatewayModelInjection, error) {
-	if s.llmModelRepo == nil {
-		return nil, fmt.Errorf("llm model repository not configured")
-	}
-
-	items, err := s.llmModelRepo.ListActive()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list active models: %w", err)
-	}
-	if len(items) == 0 {
-		return nil, fmt.Errorf("no active models are configured")
-	}
-
-	modelsForInjection := []string{"auto"}
-	reasoningForInjection := map[string]bool{"auto": false}
-	reasoningControlForInjection := map[string]string{"auto": models.ReasoningControlNone}
-	seen := map[string]struct{}{
-		"auto": {},
-	}
-
-	for _, item := range items {
-		displayName := strings.TrimSpace(item.DisplayName)
-		if displayName == "" {
-			displayName = strings.TrimSpace(item.ProviderModelName)
-		}
-		if displayName == "" {
-			continue
-		}
-
-		normalizedName := strings.ToLower(displayName)
-		if _, exists := seen[normalizedName]; exists {
-			continue
-		}
-		seen[normalizedName] = struct{}{}
-		modelsForInjection = append(modelsForInjection, displayName)
-		models.PopulateLLMReasoningCapability(&item)
-		reasoningForInjection[displayName] = item.SupportsReasoning && item.ReasoningEnabled
-		reasoningControlForInjection[displayName] = item.ReasoningControl
-	}
-
-	rawModels, err := json.Marshal(modelsForInjection)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode gateway model list: %w", err)
-	}
-	rawReasoning, err := json.Marshal(reasoningForInjection)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode gateway model reasoning settings: %w", err)
-	}
-	rawReasoningControl, err := json.Marshal(reasoningControlForInjection)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode gateway model reasoning controls: %w", err)
-	}
-
-	return &gatewayModelInjection{
-		defaultModel:         "auto",
-		modelsJSON:           string(rawModels),
-		reasoningJSON:        string(rawReasoning),
-		reasoningControlJSON: string(rawReasoningControl),
-	}, nil
 }
 
 func mergeEnvMaps(base map[string]string, overlay map[string]string) map[string]string {

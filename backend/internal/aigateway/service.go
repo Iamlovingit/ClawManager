@@ -339,17 +339,26 @@ type Service interface {
 }
 
 type service struct {
-	modelRepo          repository.LLMModelRepository
-	invocationService  services.ModelInvocationService
-	auditEventService  services.AuditEventService
-	costRecordService  services.CostRecordService
-	riskDetector       services.RiskDetectionService
-	riskHitService     services.RiskHitService
-	chatSessionService services.ChatSessionService
-	chatMessageService services.ChatMessageService
-	secretRefService   services.SecretRefService
-	httpClient         *http.Client
-	streamHTTPClient   *http.Client
+	modelRepo            repository.LLMModelRepository
+	expandedModelCatalog services.ExpandedLLMModelCatalog
+	invocationService    services.ModelInvocationService
+	auditEventService    services.AuditEventService
+	costRecordService    services.CostRecordService
+	riskDetector         services.RiskDetectionService
+	riskHitService       services.RiskHitService
+	chatSessionService   services.ChatSessionService
+	chatMessageService   services.ChatMessageService
+	secretRefService     services.SecretRefService
+	httpClient           *http.Client
+	streamHTTPClient     *http.Client
+}
+
+type ServiceOption func(*service)
+
+func WithExpandedLLMModelCatalog(catalog services.ExpandedLLMModelCatalog) ServiceOption {
+	return func(s *service) {
+		s.expandedModelCatalog = catalog
+	}
 }
 
 // NewService creates a new AI gateway service.
@@ -362,9 +371,10 @@ func NewService(
 	riskHitService services.RiskHitService,
 	chatSessionService services.ChatSessionService,
 	chatMessageService services.ChatMessageService,
+	options ...ServiceOption,
 ) Service {
 	httpClient, streamHTTPClient := newGatewayHTTPClients()
-	return &service{
+	result := &service{
 		modelRepo:          modelRepo,
 		invocationService:  invocationService,
 		auditEventService:  auditEventService,
@@ -377,6 +387,12 @@ func NewService(
 		httpClient:         httpClient,
 		streamHTTPClient:   streamHTTPClient,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(result)
+		}
+	}
+	return result
 }
 
 func newGatewayHTTPClients() (*http.Client, *http.Client) {
@@ -391,7 +407,7 @@ func newGatewayHTTPClients() (*http.Client, *http.Client) {
 }
 
 func (s *service) ListAvailableModels() ([]AvailableModel, error) {
-	items, err := s.modelRepo.ListActive()
+	items, err := s.listActiveModels()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list available models: %w", err)
 	}
@@ -399,7 +415,7 @@ func (s *service) ListAvailableModels() ([]AvailableModel, error) {
 		return []AvailableModel{}, nil
 	}
 
-	return []AvailableModel{
+	available := []AvailableModel{
 		{
 			ID:          0,
 			DisplayName: "Auto",
@@ -407,7 +423,39 @@ func (s *service) ListAvailableModels() ([]AvailableModel, error) {
 			IsSecure:    false,
 			Provider:    "gateway",
 		},
-	}, nil
+	}
+	seen := map[string]struct{}{autoModelID: {}}
+	for _, item := range items {
+		displayName := strings.TrimSpace(item.DisplayName)
+		if displayName == "" {
+			displayName = strings.TrimSpace(item.ProviderModelName)
+		}
+		if displayName == "" {
+			continue
+		}
+
+		normalizedName := strings.ToLower(displayName)
+		if _, exists := seen[normalizedName]; exists {
+			continue
+		}
+		seen[normalizedName] = struct{}{}
+		available = append(available, AvailableModel{
+			ID:          item.ID,
+			DisplayName: displayName,
+			Description: item.Description,
+			IsSecure:    item.IsSecure,
+			Provider:    item.ProviderType,
+		})
+	}
+
+	return available, nil
+}
+
+func (s *service) listActiveModels() ([]models.LLMModel, error) {
+	if s.expandedModelCatalog != nil {
+		return s.expandedModelCatalog.ListExpandedActiveModels()
+	}
+	return s.modelRepo.ListActive()
 }
 
 func (s *service) ChatCompletions(ctx context.Context, userID int, req ChatCompletionRequest) (*ProxyResponse, string, error) {
@@ -2292,7 +2340,7 @@ func (s *service) resolveTargetModel(selectedModel *models.LLMModel, analysis se
 		return selectedModel, models.RiskActionAllow, nil
 	}
 
-	activeModels, err := s.modelRepo.ListActive()
+	activeModels, err := s.listActiveModels()
 	if err != nil {
 		return nil, models.RiskActionBlock, fmt.Errorf("failed to list active secure models: %w", err)
 	}
@@ -2309,6 +2357,26 @@ func (s *service) resolveRequestedModel(requestedModel string) (*models.LLMModel
 	if isAutoModelRequest(requestedModel) {
 		return s.selectAutoModel()
 	}
+	requestedModel = strings.TrimSpace(requestedModel)
+	if s.expandedModelCatalog != nil {
+		items, err := s.listActiveModels()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get model: %w", err)
+		}
+		for _, item := range items {
+			if strings.TrimSpace(item.DisplayName) == requestedModel {
+				selected := item
+				return &selected, nil
+			}
+		}
+		for _, item := range items {
+			if strings.EqualFold(strings.TrimSpace(item.DisplayName), requestedModel) {
+				selected := item
+				return &selected, nil
+			}
+		}
+		return nil, errors.New("model is not active or does not exist")
+	}
 
 	selectedModel, err := s.modelRepo.GetByDisplayName(requestedModel)
 	if err != nil {
@@ -2321,7 +2389,7 @@ func (s *service) resolveRequestedModel(requestedModel string) (*models.LLMModel
 }
 
 func (s *service) selectAutoModel() (*models.LLMModel, error) {
-	items, err := s.modelRepo.ListActive()
+	items, err := s.listActiveModels()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list active models: %w", err)
 	}
