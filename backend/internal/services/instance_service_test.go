@@ -31,6 +31,14 @@ type stubLLMModelRepository struct {
 	active []models.LLMModel
 }
 
+type expandedModelCatalogStub struct {
+	active []models.LLMModel
+}
+
+func (s *expandedModelCatalogStub) ListExpandedActiveModels() ([]models.LLMModel, error) {
+	return append([]models.LLMModel(nil), s.active...), nil
+}
+
 func (r *stubLLMModelRepository) List() ([]models.LLMModel, error) {
 	items := make([]models.LLMModel, len(r.active))
 	copy(items, r.active)
@@ -90,6 +98,9 @@ func TestBuildGatewayEnvInjectsGatewayModelCatalog(t *testing.T) {
 			if env["CLAWMANAGER_LLM_MODEL"] != `["auto","GPT-4.1","Claude 3.7 Sonnet","deepseek-r1"]` {
 				t.Fatalf("expected CLAWMANAGER_LLM_MODEL to contain injected model catalog JSON, got %q", env["CLAWMANAGER_LLM_MODEL"])
 			}
+			if env["CLAWMANAGER_LLM_PROVIDER_MODELS"] != `["auto/auto","GPT-4.1/GPT-4.1","Claude 3.7 Sonnet/Claude 3.7 Sonnet","provider/deepseek-r1"]` {
+				t.Fatalf("expected CLAWMANAGER_LLM_PROVIDER_MODELS to preserve configured provider names, got %q", env["CLAWMANAGER_LLM_PROVIDER_MODELS"])
+			}
 			if env["OPENAI_MODEL"] != "auto" {
 				t.Fatalf("expected OPENAI_MODEL to remain the default gateway alias, got %q", env["OPENAI_MODEL"])
 			}
@@ -100,6 +111,33 @@ func TestBuildGatewayEnvInjectsGatewayModelCatalog(t *testing.T) {
 				assertOpenCodeGatewayConfig(t, env["OPENCODE_CONFIG_CONTENT"])
 			}
 		})
+	}
+}
+
+func TestResolveGatewayModelInjectionUsesExpandedProviderCatalog(t *testing.T) {
+	expanded := []models.LLMModel{
+		{DisplayName: "model-1", ProviderModelName: "provider-model-1", CatalogProviderName: "configured-provider"},
+		{DisplayName: "model-2", ProviderModelName: "provider-model-2", CatalogProviderName: "configured-provider"},
+		{DisplayName: "model-3", ProviderModelName: "provider-model-3", CatalogProviderName: "configured-provider"},
+		{DisplayName: "model-4", ProviderModelName: "provider-model-4", CatalogProviderName: "configured-provider"},
+		{DisplayName: "model-5", ProviderModelName: "provider-model-5", CatalogProviderName: "configured-provider"},
+		{DisplayName: "model-6", ProviderModelName: "provider-model-6", CatalogProviderName: "configured-provider"},
+		{DisplayName: "model-7", ProviderModelName: "provider-model-7", CatalogProviderName: "configured-provider"},
+	}
+	service := &instanceService{
+		llmModelRepo:         &stubLLMModelRepository{active: expanded[:1]},
+		expandedModelCatalog: &expandedModelCatalogStub{active: expanded},
+	}
+
+	injection, err := service.resolveGatewayModelInjection()
+	if err != nil {
+		t.Fatalf("resolveGatewayModelInjection returned error: %v", err)
+	}
+	if injection.modelsJSON != `["auto","model-1","model-2","model-3","model-4","model-5","model-6","model-7"]` {
+		t.Fatalf("expanded provider models were not injected: %s", injection.modelsJSON)
+	}
+	if injection.providerModelsJSON != `["auto/auto","configured-provider/model-1","configured-provider/model-2","configured-provider/model-3","configured-provider/model-4","configured-provider/model-5","configured-provider/model-6","configured-provider/model-7"]` {
+		t.Fatalf("expanded provider model references were not injected: %s", injection.providerModelsJSON)
 	}
 }
 
@@ -116,20 +154,31 @@ func assertOpenCodeGatewayConfig(t *testing.T, raw string) {
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
 		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v", err)
 	}
-	provider, ok := config.Provider["clawmanager"]
-	if !ok {
-		t.Fatalf("missing clawmanager provider in OpenCode config: %s", raw)
-	}
-	if config.Model != "clawmanager/auto" || provider.NPM != "@ai-sdk/openai-compatible" {
+	if config.Model != "auto/auto" {
 		t.Fatalf("unexpected OpenCode provider config: %s", raw)
 	}
-	if provider.Options["baseURL"] != "{env:CLAWMANAGER_LLM_BASE_URL}" || provider.Options["apiKey"] != "{env:CLAWMANAGER_LLM_API_KEY}" {
-		t.Fatalf("OpenCode config must use governed gateway env references: %s", raw)
+	wantProviders := map[string][]string{
+		"auto":              {"auto"},
+		"GPT-4.1":           {"GPT-4.1"},
+		"Claude 3.7 Sonnet": {"Claude 3.7 Sonnet"},
+		"provider":          {"deepseek-r1"},
 	}
-	for _, model := range []string{"auto", "GPT-4.1", "Claude 3.7 Sonnet", "deepseek-r1"} {
-		if _, ok := provider.Models[model]; !ok {
-			t.Fatalf("OpenCode config is missing model %q: %s", model, raw)
+	for providerID, modelIDs := range wantProviders {
+		provider, ok := config.Provider[providerID]
+		if !ok {
+			t.Fatalf("missing configured provider %q in OpenCode config: %s", providerID, raw)
 		}
+		if provider.NPM != "@ai-sdk/openai-compatible" || provider.Options["baseURL"] != "{env:CLAWMANAGER_LLM_BASE_URL}" || provider.Options["apiKey"] != "{env:CLAWMANAGER_LLM_API_KEY}" {
+			t.Fatalf("OpenCode provider %q must use governed gateway env references: %s", providerID, raw)
+		}
+		for _, modelID := range modelIDs {
+			if _, ok := provider.Models[modelID]; !ok {
+				t.Fatalf("OpenCode provider %q is missing model %q: %s", providerID, modelID, raw)
+			}
+		}
+	}
+	if _, exists := config.Provider["clawmanager"]; exists {
+		t.Fatalf("OpenCode config retained legacy clawmanager provider: %s", raw)
 	}
 }
 

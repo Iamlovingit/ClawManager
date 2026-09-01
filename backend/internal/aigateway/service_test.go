@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -12,6 +13,116 @@ import (
 
 	"clawreef/internal/models"
 )
+
+type availableModelRepositoryStub struct {
+	active []models.LLMModel
+}
+
+type availableExpandedModelCatalogStub struct {
+	active []models.LLMModel
+}
+
+func (s *availableExpandedModelCatalogStub) ListExpandedActiveModels() ([]models.LLMModel, error) {
+	return append([]models.LLMModel(nil), s.active...), nil
+}
+
+func (r *availableModelRepositoryStub) List() ([]models.LLMModel, error) {
+	return append([]models.LLMModel(nil), r.active...), nil
+}
+
+func (r *availableModelRepositoryStub) ListActive() ([]models.LLMModel, error) {
+	return append([]models.LLMModel(nil), r.active...), nil
+}
+
+func (r *availableModelRepositoryStub) GetByID(int) (*models.LLMModel, error) {
+	return nil, nil
+}
+
+func (r *availableModelRepositoryStub) GetByDisplayName(string) (*models.LLMModel, error) {
+	return nil, nil
+}
+
+func (r *availableModelRepositoryStub) Save(*models.LLMModel) error { return nil }
+
+func (r *availableModelRepositoryStub) Delete(int) error { return nil }
+
+func TestListAvailableModelsIncludesEntireActiveCatalog(t *testing.T) {
+	description := "Fast coding model"
+	service := &service{modelRepo: &availableModelRepositoryStub{active: []models.LLMModel{
+		{ID: 11, DisplayName: "GPT-5.4", ProviderType: models.ProviderTypeOpenAI, Description: &description},
+		{ID: 12, DisplayName: "Claude Sonnet 4.6", ProviderType: models.ProviderTypeAnthropic, IsSecure: true},
+		{ID: 13, ProviderModelName: "deepseek-v4", ProviderType: models.ProviderTypeOpenAICompatible},
+		{ID: 14, DisplayName: "AUTO", ProviderType: models.ProviderTypeLocal},
+		{ID: 15, DisplayName: "  gpt-5.4  ", ProviderType: models.ProviderTypeOpenAI},
+		{ID: 16, DisplayName: "   ", ProviderModelName: "   ", ProviderType: models.ProviderTypeLocal},
+	}}}
+
+	items, err := service.ListAvailableModels()
+	if err != nil {
+		t.Fatalf("ListAvailableModels returned error: %v", err)
+	}
+	if len(items) != 4 {
+		t.Fatalf("available model count = %d, want Auto plus 3 configured models: %#v", len(items), items)
+	}
+
+	wantNames := []string{"Auto", "GPT-5.4", "Claude Sonnet 4.6", "deepseek-v4"}
+	for index, want := range wantNames {
+		if items[index].DisplayName != want {
+			t.Fatalf("available model %d display name = %q, want %q", index, items[index].DisplayName, want)
+		}
+	}
+	if items[1].ID != 11 || items[1].Description == nil || *items[1].Description != description {
+		t.Fatalf("configured model metadata was not preserved: %#v", items[1])
+	}
+	if items[2].ID != 12 || !items[2].IsSecure || items[2].Provider != models.ProviderTypeAnthropic {
+		t.Fatalf("secure model metadata was not preserved: %#v", items[2])
+	}
+}
+
+func TestListAvailableModelsReturnsEmptyCatalogWhenNoModelsAreActive(t *testing.T) {
+	service := &service{modelRepo: &availableModelRepositoryStub{}}
+
+	items, err := service.ListAvailableModels()
+	if err != nil {
+		t.Fatalf("ListAvailableModels returned error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("available models = %#v, want empty list", items)
+	}
+}
+
+func TestGatewayListsAndResolvesEveryExpandedProviderModel(t *testing.T) {
+	expanded := make([]models.LLMModel, 0, 7)
+	for index := 1; index <= 7; index++ {
+		expanded = append(expanded, models.LLMModel{
+			ID:                index,
+			DisplayName:       fmt.Sprintf("model-%d", index),
+			ProviderModelName: fmt.Sprintf("provider-model-%d", index),
+			ProviderType:      models.ProviderTypeOpenAICompatible,
+			IsActive:          true,
+		})
+	}
+	service := &service{
+		modelRepo:            &availableModelRepositoryStub{active: expanded[:1]},
+		expandedModelCatalog: &availableExpandedModelCatalogStub{active: expanded},
+	}
+
+	items, err := service.ListAvailableModels()
+	if err != nil {
+		t.Fatalf("ListAvailableModels returned error: %v", err)
+	}
+	if len(items) != 8 {
+		t.Fatalf("available model count = %d, want Auto plus 7 provider models: %#v", len(items), items)
+	}
+
+	selected, err := service.resolveRequestedModel("model-7")
+	if err != nil {
+		t.Fatalf("resolveRequestedModel returned error: %v", err)
+	}
+	if selected.ProviderModelName != "provider-model-7" {
+		t.Fatalf("resolved provider model = %q, want provider-model-7", selected.ProviderModelName)
+	}
+}
 
 type stubModelInvocationService struct {
 	items []models.ModelInvocation
