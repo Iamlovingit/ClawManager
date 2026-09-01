@@ -7,6 +7,7 @@
     "dev": "vite --port 9002",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:version": "node scripts/app-version-display.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
