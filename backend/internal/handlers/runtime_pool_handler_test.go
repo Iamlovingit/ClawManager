@@ -329,7 +329,14 @@ func (r *runtimePoolHandlerUserRepo) GetByID(id int) (*models.User, error) {
 func (r *runtimePoolHandlerUserRepo) GetByUsername(username string) (*models.User, error) {
 	return nil, nil
 }
+
+func (r *runtimePoolHandlerUserRepo) GetByAuthProviderUsername(authProvider, username string) (*models.User, error) { return r.GetByUsername(username) }
+func (r *runtimePoolHandlerUserRepo) CountByAuthProviderUsername(authProvider, username string) (int, error) { return 0, nil }
+func (r *runtimePoolHandlerUserRepo) GetByLoginAlias(authProvider, loginAlias string) (*models.User, error) { return nil, nil }
 func (r *runtimePoolHandlerUserRepo) GetByEmail(email string) (*models.User, error) {
+	return nil, nil
+}
+func (r *runtimePoolHandlerUserRepo) GetByExternalIdentity(authProvider, externalID string) (*models.User, error) {
 	return nil, nil
 }
 func (r *runtimePoolHandlerUserRepo) Update(user *models.User) error { return nil }

@@ -1,8 +1,10 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"clawreef/internal/config"
@@ -29,22 +31,58 @@ type TokenPair struct {
 
 // authService implements AuthService
 type authService struct {
-	userRepo  repository.UserRepository
-	jwtConfig config.JWTConfig
+	userRepo                repository.UserRepository
+	quotaRepo               repository.QuotaRepository
+	jwtConfig               config.JWTConfig
+	enterpriseAuthenticator EnterpriseAuthenticator
+	enterprisePolicy        enterpriseAuthPolicy
+}
+
+type enterpriseAuthPolicy struct {
+	AllowLocalFallback bool
+	SyncRole           bool
+}
+
+type AuthServiceOption func(*authService)
+
+func WithEnterpriseAuthPolicy(cfg config.EnterpriseAuthConfig) AuthServiceOption {
+	return func(s *authService) {
+		s.enterprisePolicy.AllowLocalFallback = cfg.AllowLocalFallback
+		s.enterprisePolicy.SyncRole = cfg.SyncRole
+	}
+}
+
+func WithQuotaRepository(quotaRepo repository.QuotaRepository) AuthServiceOption {
+	return func(s *authService) {
+		s.quotaRepo = quotaRepo
+	}
 }
 
 // NewAuthService creates a new auth service
-func NewAuthService(userRepo repository.UserRepository, jwtConfig config.JWTConfig) AuthService {
-	return &authService{
-		userRepo:  userRepo,
-		jwtConfig: jwtConfig,
+func NewAuthService(userRepo repository.UserRepository, jwtConfig config.JWTConfig, enterpriseAuthenticator EnterpriseAuthenticator, options ...AuthServiceOption) AuthService {
+	s := &authService{
+		userRepo:                userRepo,
+		jwtConfig:               jwtConfig,
+		enterpriseAuthenticator: enterpriseAuthenticator,
+		enterprisePolicy: enterpriseAuthPolicy{
+			AllowLocalFallback: true,
+		},
 	}
+	for _, option := range options {
+		if option != nil {
+			option(s)
+		}
+	}
+	return s
 }
 
 // Register registers a new user
 func (s *authService) Register(username, email, password string) (*models.User, error) {
+	if isReservedLocalUsername(username) {
+		return nil, errors.New("local usernames cannot start with ldap_")
+	}
 	// Check if username already exists
-	existingUser, err := s.userRepo.GetByUsername(username)
+	existingUser, err := s.userRepo.GetByAuthProviderUsername(AuthProviderLocal, username)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check username: %w", err)
 	}
@@ -73,6 +111,7 @@ func (s *authService) Register(username, email, password string) (*models.User, 
 		Email:        email,
 		PasswordHash: passwordHash,
 		Role:         "user",
+		AuthProvider: AuthProviderLocal,
 		IsActive:     true,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
@@ -87,8 +126,17 @@ func (s *authService) Register(username, email, password string) (*models.User, 
 
 // Login authenticates a user and returns tokens
 func (s *authService) Login(username, password string) (*TokenPair, error) {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(username)), "ldap_") {
+		return s.loginLDAPAlias(strings.TrimSpace(username), password)
+	}
+	// An unqualified username is always a local login. LDAP is never selected
+	// implicitly, even when a directory contains the same uid.
+	return s.loginLocal(username, password)
+}
+
+func (s *authService) loginLocal(username, password string) (*TokenPair, error) {
 	// Get user by username
-	user, err := s.userRepo.GetByUsername(username)
+	user, err := s.userRepo.GetByAuthProviderUsername(AuthProviderLocal, username)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
@@ -100,6 +148,9 @@ func (s *authService) Login(username, password string) (*TokenPair, error) {
 	if !user.IsActive {
 		return nil, errors.New("account is disabled")
 	}
+	if normalizeAuthProvider(user.AuthProvider) == AuthProviderLDAP {
+		return nil, errors.New("invalid username or password")
+	}
 
 	// Verify password
 	if !utils.VerifyPassword(password, user.PasswordHash) {
@@ -109,6 +160,9 @@ func (s *authService) Login(username, password string) (*TokenPair, error) {
 	// Update last login
 	now := time.Now()
 	user.LastLogin = &now
+	if strings.TrimSpace(user.AuthProvider) == "" {
+		user.AuthProvider = AuthProviderLocal
+	}
 	if err := s.userRepo.Update(user); err != nil {
 		return nil, fmt.Errorf("failed to update last login: %w", err)
 	}
@@ -120,6 +174,49 @@ func (s *authService) Login(username, password string) (*TokenPair, error) {
 	}
 
 	return tokenPair, nil
+}
+
+func (s *authService) loginLDAPAlias(loginName, password string) (*TokenPair, error) {
+	loginAlias := strings.ToLower(strings.TrimSpace(loginName))
+	if len(loginAlias) == len("ldap_") || s.enterpriseAuthenticator == nil {
+		return nil, errors.New("invalid username or password")
+	}
+	user, err := s.userRepo.GetByLoginAlias(AuthProviderLDAP, loginAlias)
+	if err != nil || user == nil || user.ExternalID == nil || strings.TrimSpace(*user.ExternalID) == "" || !user.IsActive {
+		return nil, errors.New("invalid username or password")
+	}
+	externalID := strings.TrimSpace(*user.ExternalID)
+	enterpriseUser, err := s.enterpriseAuthenticator.AuthenticateByIdentity(context.Background(), externalID, password)
+	if err != nil {
+		return nil, errors.New("invalid username or password")
+	}
+	if enterpriseUser == nil || !strings.EqualFold(strings.TrimSpace(enterpriseUser.ExternalID), externalID) {
+		return nil, errors.New("invalid username or password")
+	}
+
+	now := time.Now()
+	user.LastLogin = &now
+	if s.currentEnterprisePolicy().SyncRole && (enterpriseUser.Role == "admin" || enterpriseUser.Role == "user") {
+		user.Role = enterpriseUser.Role
+		if err := SyncDefaultQuotaForRole(s.quotaRepo, user.ID, user.Role); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.userRepo.Update(user); err != nil {
+		return nil, fmt.Errorf("failed to update enterprise user: %w", err)
+	}
+	return s.generateTokens(user.ID)
+}
+
+func (s *authService) currentEnterprisePolicy() enterpriseAuthPolicy {
+	if provider, ok := s.enterpriseAuthenticator.(EnterpriseAuthPolicyProvider); ok && provider != nil {
+		policy := provider.EnterpriseAuthPolicy()
+		return enterpriseAuthPolicy{
+			AllowLocalFallback: policy.AllowLocalFallback,
+			SyncRole:           policy.SyncRole,
+		}
+	}
+	return s.enterprisePolicy
 }
 
 // RefreshToken refreshes the access token using a refresh token
@@ -179,6 +276,9 @@ func (s *authService) ChangePassword(userID int, currentPassword, newPassword st
 	if user == nil {
 		return errors.New("user not found")
 	}
+	if normalizeAuthProvider(user.AuthProvider) == AuthProviderLDAP {
+		return errors.New("enterprise users must change password in the enterprise identity platform")
+	}
 
 	if !utils.VerifyPassword(currentPassword, user.PasswordHash) {
 		return errors.New("current password is incorrect")
@@ -197,6 +297,23 @@ func (s *authService) ChangePassword(userID int, currentPassword, newPassword st
 	}
 
 	return nil
+}
+
+func normalizeAuthProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case AuthProviderLDAP:
+		return AuthProviderLDAP
+	default:
+		return AuthProviderLocal
+	}
+}
+
+func isReservedLocalUsername(username string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(username)), "ldap_")
+}
+
+func enterprisePasswordMarker(provider string) string {
+	return fmt.Sprintf("external:%s", normalizeAuthProvider(provider))
 }
 
 // generateTokens generates access and refresh tokens
@@ -224,4 +341,11 @@ func (s *authService) generateTokens(userID int) (*TokenPair, error) {
 		RefreshToken: refreshToken,
 		ExpiresIn:    s.jwtConfig.AccessExpiry * 60,
 	}, nil
+}
+
+func stringPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

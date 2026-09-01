@@ -18,6 +18,7 @@ stringData:
   mysql-root-password: root123
   mysql-password: clawreef123
   jwt-secret: change-me-in-production
+  auth-config-encryption-key: clawmanager-auth-key-dev-32byte!
   runtime-agent-control-token: change-me-runtime-control-token
   runtime-agent-report-token: change-me-runtime-report-token
   openclaw-gateway-token: change-me-openclaw-gateway-token
@@ -1290,6 +1291,55 @@ spec:
                 secretKeyRef:
                   name: clawmanager-secrets
                   key: jwt-secret
+            - name: AUTH_CONFIG_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: clawmanager-secrets
+                  key: auth-config-encryption-key
+            - name: AUTH_ENTERPRISE_ENABLED
+              value: "false"
+            - name: AUTH_ENTERPRISE_ALLOW_LOCAL_FALLBACK
+              value: "true"
+            - name: AUTH_ENTERPRISE_SYNC_ROLE
+              value: "false"
+            - name: LDAP_HOST
+              value: ""
+            - name: LDAP_PORT
+              value: "389"
+            - name: LDAP_USE_TLS
+              value: "false"
+            - name: LDAP_START_TLS
+              value: "false"
+            - name: LDAP_SKIP_TLS_VERIFY
+              value: "false"
+            - name: LDAP_TLS_CA_FILE
+              value: ""
+            - name: LDAP_TLS_SERVER_NAME
+              value: ""
+            - name: LDAP_BIND_DN
+              value: ""
+            - name: LDAP_BIND_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clawmanager-secrets
+                  key: ldap-bind-password
+                  optional: true
+            - name: LDAP_BASE_DN
+              value: ""
+            - name: LDAP_USER_FILTER
+              value: "(&(objectClass=person)(uid=%s))"
+            - name: LDAP_USERNAME_ATTRIBUTE
+              value: "uid"
+            - name: LDAP_EMAIL_ATTRIBUTE
+              value: "mail"
+            - name: LDAP_GROUP_BASE_DN
+              value: ""
+            - name: LDAP_GROUP_FILTER
+              value: "(member=%s)"
+            - name: LDAP_ADMIN_GROUP_DNS
+              value: ""
+            - name: LDAP_DEFAULT_ROLE
+              value: "user"
             - name: OBJECT_STORAGE_ENDPOINT
               value: "minio.clawmanager-system.svc.cluster.local:9000"
             - name: OBJECT_STORAGE_REGION
