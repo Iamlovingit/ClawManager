@@ -58,6 +58,7 @@ import {
 
 const META_POLL_INTERVAL_MS = 5000;
 const RUNTIME_POLL_INTERVAL_MS = 5000;
+const RESTART_NOTICE_AUTO_DISMISS_MS = 6000;
 const LITE_COLLAPSED_BOTTOM_FALLBACK_PX = 120;
 const LITE_COLLAPSED_BOTTOM_MAX_PX = 220;
 const LITE_ROOT_GAP_TOTAL_PX = 16; // two gap-2 rows between header / workspace / bottom
@@ -390,6 +391,7 @@ const InstanceDetailPage: React.FC = () => {
     string | null
   >(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [serviceFrameReloadToken, setServiceFrameReloadToken] = useState(0);
   const [openCodeProjectRestartPending, setOpenCodeProjectRestartPending] =
     useState(false);
   const [
@@ -415,6 +417,43 @@ const InstanceDetailPage: React.FC = () => {
   const liteBottomRef = useRef<HTMLDivElement>(null);
   const bottomPanelExpandedRef = useRef(false);
   const restartMenuRef = useRef<HTMLDivElement>(null);
+  const restartNoticeTimerRef = useRef<number | null>(null);
+
+  const cancelRestartNoticeTimer = useCallback(() => {
+    if (restartNoticeTimerRef.current !== null) {
+      window.clearTimeout(restartNoticeTimerRef.current);
+      restartNoticeTimerRef.current = null;
+    }
+  }, []);
+
+  const dismissRestartNotice = useCallback(() => {
+    cancelRestartNoticeTimer();
+    setActionMessage(null);
+  }, [cancelRestartNoticeTimer]);
+
+  const showRestartNotice = useCallback(
+    (message: string) => {
+      cancelRestartNoticeTimer();
+      setActionMessage(message);
+    },
+    [cancelRestartNoticeTimer],
+  );
+
+  const markRestartSubmitted = useCallback(
+    (message: string) => {
+      showRestartNotice(message);
+      restartNoticeTimerRef.current = window.setTimeout(() => {
+        restartNoticeTimerRef.current = null;
+        setActionMessage((current) => (current === message ? null : current));
+      }, RESTART_NOTICE_AUTO_DISMISS_MS);
+      setServiceFrameReloadToken((current) => current + 1);
+    },
+    [showRestartNotice],
+  );
+
+  useEffect(() => {
+    return () => cancelRestartNoticeTimer();
+  }, [cancelRestartNoticeTimer]);
 
   const fetchMeta = useCallback(
     async (targetInstanceId: number, options?: { background?: boolean }) => {
@@ -541,10 +580,11 @@ const InstanceDetailPage: React.FC = () => {
       return;
     }
 
-    setActionMessage(null);
+    dismissRestartNotice();
     setOpenCodeProjectRestartPending(false);
     setOpenCodeProjectRestartSawTransition(false);
   }, [
+    dismissRestartNotice,
     instance?.status,
     openCodeProjectRestartPending,
     openCodeProjectRestartSawTransition,
@@ -750,9 +790,9 @@ const InstanceDetailPage: React.FC = () => {
     try {
       setActionLoading(action);
       if (action === "restart") {
-        setActionMessage(t("instances.restartInProgress"));
+        showRestartNotice(t("instances.restartInProgress"));
       } else {
-        setActionMessage(null);
+        dismissRestartNotice();
       }
       switch (action) {
         case "start":
@@ -763,7 +803,7 @@ const InstanceDetailPage: React.FC = () => {
           break;
         case "restart":
           await instanceService.restartInstance(instance.id);
-          setActionMessage(t("instances.restartSubmitted"));
+          markRestartSubmitted(t("instances.restartSubmitted"));
           break;
         case "delete":
           await instanceService.deleteInstance(instance.id);
@@ -773,6 +813,7 @@ const InstanceDetailPage: React.FC = () => {
       }
       await fetchMeta(instance.id, { background: true });
     } catch (err: unknown) {
+      dismissRestartNotice();
       alert(getErrorMessage(err, t("instances.failedToLoad")));
     } finally {
       setActionLoading(null);
@@ -790,7 +831,7 @@ const InstanceDetailPage: React.FC = () => {
     try {
       setActionLoading("restart-environment");
       setRestartEnvironmentError(null);
-      setActionMessage(t("instances.restartInProgress"));
+      showRestartNotice(t("instances.restartInProgress"));
       await instanceService.restartInstance(instance.id, {
         environment_overrides: environmentOverrides,
         environment_override_removals: environmentOverrideRemovals,
@@ -804,10 +845,10 @@ const InstanceDetailPage: React.FC = () => {
         );
       });
       setShowRestartEnvironmentDialog(false);
-      setActionMessage(t("instances.restartEnvironmentSaved"));
+      markRestartSubmitted(t("instances.restartEnvironmentSaved"));
       await fetchMeta(instance.id, { background: true });
     } catch (restartError) {
-      setActionMessage(null);
+      dismissRestartNotice();
       setRestartEnvironmentError(
         getErrorMessage(restartError, t("instances.restartEnvironmentFailed")),
       );
@@ -842,19 +883,21 @@ const InstanceDetailPage: React.FC = () => {
       setOpenCodeProjectRestartPending(false);
       setOpenCodeProjectRestartSawTransition(false);
       setActionLoading("select-opencode-project");
-      setActionMessage("Saving OpenCode project and restarting…");
+      showRestartNotice("Saving OpenCode project and restarting…");
       await instanceService.restartInstance(instance.id, {
         environment_overrides: {
           CLAWMANAGER_DEFAULT_PROJECT_PATH: projectPath,
         },
       });
-      setActionMessage("OpenCode project saved. The instance is restarting.");
+      markRestartSubmitted(
+        "OpenCode project saved. The instance is restarting.",
+      );
       setOpenCodeProjectRestartPending(true);
       await fetchMeta(instance.id, { background: true });
     } catch (selectProjectError) {
       setOpenCodeProjectRestartPending(false);
       setOpenCodeProjectRestartSawTransition(false);
-      setActionMessage(null);
+      dismissRestartNotice();
       alert(
         getErrorMessage(selectProjectError, "Failed to set OpenCode project"),
       );
@@ -999,7 +1042,7 @@ const InstanceDetailPage: React.FC = () => {
     try {
       setActionLoading("desktop-stream-profile");
       setDesktopStreamMessage(null);
-      setActionMessage(null);
+      dismissRestartNotice();
       await saveDesktopStreamProfile();
       setDesktopStreamMessage(t("instances.desktopStreamSavedRestartRequired"));
     } catch (streamError) {
@@ -1018,14 +1061,15 @@ const InstanceDetailPage: React.FC = () => {
     try {
       setActionLoading("desktop-stream-restart");
       setDesktopStreamMessage(t("instances.restartInProgress"));
-      setActionMessage(t("instances.restartInProgress"));
+      showRestartNotice(t("instances.restartInProgress"));
       await saveDesktopStreamProfile();
       await instanceService.restartInstance(instance.id);
       setDesktopStreamMessage(t("instances.restartSubmitted"));
-      setActionMessage(t("instances.restartSubmitted"));
+      markRestartSubmitted(t("instances.restartSubmitted"));
       await fetchMeta(instance.id, { background: true });
     } catch (streamError) {
       console.error("Failed to apply desktop stream profile", streamError);
+      dismissRestartNotice();
       setDesktopStreamMessage(t("instances.desktopStreamSaveFailed"));
     } finally {
       setActionLoading(null);
@@ -1513,6 +1557,7 @@ const InstanceDetailPage: React.FC = () => {
               instanceType={instance.type}
               instanceMode={instance.instance_mode}
               availability={availability}
+              reloadToken={serviceFrameReloadToken}
               workspaceVisible={supportsWorkspace(instance) ? workspaceVisible : undefined}
               onWorkspaceVisibilityChange={supportsWorkspace(instance) ? setWorkspaceVisible : undefined}
             />
@@ -1590,7 +1635,15 @@ const InstanceDetailPage: React.FC = () => {
         <RotateCw
           className={`h-4 w-4 ${restartActionActive ? "animate-spin" : ""}`}
         />
-        <span>{actionMessage}</span>
+        <span className="min-w-0 flex-1">{actionMessage}</span>
+        <button
+          type="button"
+          className="rounded p-0.5 text-amber-700 hover:bg-amber-100 hover:text-amber-900"
+          aria-label={t("common.close")}
+          onClick={dismissRestartNotice}
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
     ) : null;
 
@@ -1609,6 +1662,7 @@ const InstanceDetailPage: React.FC = () => {
             instanceType={instance.type}
             instanceMode={instance.instance_mode}
             availability={availability}
+            reloadToken={serviceFrameReloadToken}
             workspaceVisible={supportsWorkspace(instance) ? workspaceVisible : undefined}
             onWorkspaceVisibilityChange={supportsWorkspace(instance) ? setWorkspaceVisible : undefined}
           />
