@@ -69,12 +69,50 @@ function readQueryToken(r) {
     return '';
 }
 
-function readToken(r) {
-    var cookieToken = readCookieToken(r);
-    if (cookieToken) {
-        return cookieToken;
+function accessTokenCandidates(r) {
+    // A freshly issued query token must be able to rotate the dedicated-origin
+    // cookie before the old cookie expires. Runtime-owned query tokens are not
+    // valid ClawManager JWTs and therefore fall through to the cookie.
+    return [readQueryToken(r), readCookieToken(r)];
+}
+
+function validatedAccessPayload(r, token, key, allowExpired) {
+    if (!token) {
+        return null;
     }
-    return readQueryToken(r);
+
+    var segments = token.split('.');
+    if (segments.length !== 3) {
+        return null;
+    }
+
+    var signingInput = segments[0] + '.' + segments[1];
+    var expected = crypto.createHmac('sha256', key).update(signingInput).digest('base64');
+    if (toStdB64NoPad(expected) !== toStdB64NoPad(segments[2])) {
+        return null;
+    }
+
+    var payload;
+    try {
+        payload = JSON.parse(b64urlToString(segments[1]));
+    } catch (e) {
+        return null;
+    }
+
+    if (payload.token_type !== 'instance_access') {
+        return null;
+    }
+
+    if (!allowExpired && payload.exp && (Date.now() / 1000) >= Number(payload.exp)) {
+        return null;
+    }
+
+    var instanceID = requestInstanceID(r);
+    if (!instanceID || String(payload.instance_id) !== String(instanceID)) {
+        return null;
+    }
+
+    return payload;
 }
 
 function resolveTarget(r) {
@@ -84,39 +122,15 @@ function resolveTarget(r) {
         return DENY;
     }
 
-    var token = readToken(r);
-    if (!token) {
-        return DENY;
+    var candidates = accessTokenCandidates(r);
+    var payload = null;
+    for (var i = 0; i < candidates.length; i++) {
+        payload = validatedAccessPayload(r, candidates[i], key, false);
+        if (payload) {
+            break;
+        }
     }
-
-    var segments = token.split('.');
-    if (segments.length !== 3) {
-        return DENY;
-    }
-
-    var signingInput = segments[0] + '.' + segments[1];
-    var expected = crypto.createHmac('sha256', key).update(signingInput).digest('base64');
-    if (toStdB64NoPad(expected) !== toStdB64NoPad(segments[2])) {
-        return DENY;
-    }
-
-    var payload;
-    try {
-        payload = JSON.parse(b64urlToString(segments[1]));
-    } catch (e) {
-        return DENY;
-    }
-
-    if (payload.token_type !== 'instance_access') {
-        return DENY;
-    }
-
-    if (payload.exp && (Date.now() / 1000) >= Number(payload.exp)) {
-        return DENY;
-    }
-
-    var instanceID = requestInstanceID(r);
-    if (!instanceID || String(payload.instance_id) !== String(instanceID)) {
+    if (!payload) {
         return DENY;
     }
 
@@ -144,7 +158,9 @@ function cleanUri(r) {
         return uri;
     }
     var cookieToken = readCookieToken(r);
-    if (cookieToken && cookieToken !== queryToken) {
+    var key = secret();
+    var managedQueryToken = key && validatedAccessPayload(r, queryToken, key, true);
+    if (!managedQueryToken && cookieToken !== queryToken) {
         return uri;
     }
 

@@ -75,6 +75,24 @@ func TestDesktopAuthAcceptsDedicatedRuntimeInstanceVariable(t *testing.T) {
 	}
 }
 
+func TestDesktopAuthAllowsDedicatedOriginTokenRotation(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "deployments", "nginx", "njs", "desktop_auth.js"))
+	if err != nil {
+		t.Fatalf("read desktop auth script: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		"return [readQueryToken(r), readCookieToken(r)]",
+		"validatedAccessPayload(r, candidates[i], key, false)",
+		"validatedAccessPayload(r, queryToken, key, true)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("desktop auth must support managed query-token rotation; missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeManifestsSeedLiteDefaultImages(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
 	for _, manifest := range append(deploymentRuntimeManifests(repoRoot), filepath.Join(repoRoot, "backend", "deployments", "k8s", "clawreef-incluster.yaml")) {

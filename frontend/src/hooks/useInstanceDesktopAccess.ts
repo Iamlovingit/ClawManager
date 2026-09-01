@@ -10,6 +10,7 @@ interface UseInstanceDesktopAccessOptions {
   instanceId: number | null;
   isRunning: boolean;
   retainSessionOnStop?: boolean;
+  reloadOnAccessRefresh?: boolean;
   resolveEmbedUrl: (url: string | null) => string | null;
   failedMessage: string;
   refreshLeadMs?: number;
@@ -59,6 +60,7 @@ export function useInstanceDesktopAccess({
   instanceId,
   isRunning,
   retainSessionOnStop = false,
+  reloadOnAccessRefresh = false,
   resolveEmbedUrl,
   failedMessage,
   refreshLeadMs = DEFAULT_REFRESH_LEAD_MS,
@@ -265,7 +267,9 @@ export function useInstanceDesktopAccess({
         setExpiresAt(nextExpiresAt);
         setError(null);
 
-        if (!previousEmbedUrl || forceReload) {
+        const shouldReloadFrame =
+          !previousEmbedUrl || forceReload || reloadOnAccessRefresh;
+        if (shouldReloadFrame) {
           embedUrlRef.current = nextEmbedUrl;
           setEmbedUrl(nextEmbedUrl);
         } else {
@@ -273,7 +277,7 @@ export function useInstanceDesktopAccess({
         }
 
         syncSessionStore({
-          embedUrl: !previousEmbedUrl || forceReload ? nextEmbedUrl : previousEmbedUrl,
+          embedUrl: shouldReloadFrame ? nextEmbedUrl : previousEmbedUrl,
           expiresAt: nextExpiresAt.getTime(),
         });
       } catch (err: any) {
@@ -300,6 +304,7 @@ export function useInstanceDesktopAccess({
       failedMessage,
       instanceId,
       isRunning,
+      reloadOnAccessRefresh,
       resolveEmbedUrl,
       scheduleRetry,
       shouldPreserveSession,
@@ -350,11 +355,6 @@ export function useInstanceDesktopAccess({
       return;
     }
 
-    if (shouldPreserveSession()) {
-      clearRefreshTimeout();
-      return;
-    }
-
     const remainingMs = expiresAt.getTime() - Date.now();
     const delay =
       remainingMs <= refreshLeadMs
@@ -373,14 +373,9 @@ export function useInstanceDesktopAccess({
     instanceId,
     isRunning,
     refreshLeadMs,
-    shouldPreserveSession,
   ]);
 
   useEffect(() => {
-    if (shouldPreserveSession()) {
-      return;
-    }
-
     const maybeReconnect = () => {
       if (!instanceId || !isRunning) {
         return;
@@ -418,7 +413,7 @@ export function useInstanceDesktopAccess({
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [instanceId, isRunning, refreshLeadMs, shouldPreserveSession]);
+  }, [instanceId, isRunning, refreshLeadMs]);
 
   const handleFrameLoad = useCallback(
     (frame: HTMLIFrameElement | null) => {

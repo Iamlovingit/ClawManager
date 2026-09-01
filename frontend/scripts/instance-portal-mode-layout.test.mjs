@@ -11,6 +11,10 @@ const desktopAccessHookSource = readFileSync(
   path.resolve(scriptDir, "../src/hooks/useInstanceDesktopAccess.ts"),
   "utf8",
 );
+const serviceFrameSource = readFileSync(
+  path.resolve(scriptDir, "../src/components/InstanceServiceFrame.tsx"),
+  "utf8",
+);
 
 function assert(condition, message) {
   if (!condition) {
@@ -105,6 +109,30 @@ assert(
 assert(
   desktopAccessHookSource.includes("refreshAccess({ forceReload: true })"),
   "Desktop access hook must force a fresh access URL when connecting a selected instance.",
+);
+
+assert(
+  desktopAccessHookSource.includes("reloadOnAccessRefresh?: boolean") &&
+    desktopAccessHookSource.includes(
+      "!previousEmbedUrl || forceReload || reloadOnAccessRefresh",
+    ) &&
+    portalSource.includes(
+      'reloadOnAccessRefresh: selectedInstance?.type === "deepseek-harness"',
+    ) &&
+    serviceFrameSource.includes(
+      'reloadOnAccessRefresh: normalizedType === "deepseek-harness"',
+    ),
+  "DeepSeek Harness access renewal must reload its dedicated-origin frame with the fresh token.",
+);
+
+const scheduledRefreshSource = desktopAccessHookSource.slice(
+  desktopAccessHookSource.indexOf("const remainingMs = expiresAt.getTime()"),
+  desktopAccessHookSource.indexOf("const maybeReconnect = () =>"),
+);
+assert(
+  scheduledRefreshSource.length > 0 &&
+    !scheduledRefreshSource.includes("shouldPreserveSession()"),
+  "Retaining an established frame while stopped must not disable access-token renewal while running.",
 );
 
 console.log("Instance portal mode layout contract is valid.");

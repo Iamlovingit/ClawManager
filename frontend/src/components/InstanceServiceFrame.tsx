@@ -71,6 +71,7 @@ export function InstanceServiceFrame({
   } = useInstanceDesktopAccess({
     instanceId,
     isRunning: isAvailable,
+    reloadOnAccessRefresh: normalizedType === "deepseek-harness",
     resolveEmbedUrl,
     failedMessage: "Failed to open instance service",
   });

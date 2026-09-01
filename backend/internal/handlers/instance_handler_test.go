@@ -786,6 +786,41 @@ func TestProxyAccessTokenPrefersCookieOverRuntimeQueryToken(t *testing.T) {
 	}
 }
 
+func TestProxyAccessTokenRotatesDedicatedOriginCookieFromManagedQueryToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	accessService := services.NewInstanceAccessService()
+	defer accessService.Stop()
+	oldToken, err := accessService.GenerateToken(1, 76, "deepseek-harness", "https://deepseek-harness-76.example.test/", "", 3001, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateToken(old) returned error: %v", err)
+	}
+	freshToken, err := accessService.GenerateToken(2, 76, "deepseek-harness", "https://deepseek-harness-76.example.test/", "", 3001, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateToken(fresh) returned error: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/instances/76/proxy/?token="+url.QueryEscape(freshToken.Token), nil)
+	c.Request.Header.Set(services.DedicatedRuntimeOriginHeader, services.RuntimeTypeDeepSeekHarness)
+	c.Request.AddCookie(&http.Cookie{Name: "instance_access_76", Value: oldToken.Token})
+
+	handler := &InstanceHandler{accessService: accessService}
+	got, ok := handler.proxyAccessToken(c, 76)
+	if !ok {
+		t.Fatal("proxyAccessToken rejected fresh managed query token")
+	}
+	if got != freshToken.Token {
+		t.Fatalf("proxyAccessToken selected stale cookie token, got %q", got)
+	}
+	setCookie := recorder.Header().Get("Set-Cookie")
+	for _, want := range []string{"instance_access_76=" + freshToken.Token, "Path=/", "Secure", "HttpOnly", "SameSite=None"} {
+		if !strings.Contains(setCookie, want) {
+			t.Fatalf("Set-Cookie = %q, want %q", setCookie, want)
+		}
+	}
+}
+
 func TestProxyAccessTokenRejectsRuntimeQueryTokenWithoutCookie(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	accessService := services.NewInstanceAccessService()
