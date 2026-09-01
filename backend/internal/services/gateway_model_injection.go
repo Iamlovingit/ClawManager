@@ -72,7 +72,7 @@ func (s *instanceService) resolveGatewayModelInjection() (*gatewayModelInjection
 	seen := map[string]struct{}{"auto": {}}
 
 	for _, item := range items {
-		displayName := firstNonEmpty(item.DisplayName, item.ProviderModelName)
+		displayName := firstNonEmptyCatalogValue(item.DisplayName, item.ProviderModelName)
 		if displayName == "" {
 			continue
 		}
@@ -82,7 +82,7 @@ func (s *instanceService) resolveGatewayModelInjection() (*gatewayModelInjection
 		}
 		seen[normalizedName] = struct{}{}
 
-		providerName := firstNonEmpty(item.CatalogProviderName, modelCatalogProviderName(item))
+		providerName := firstNonEmptyCatalogValue(item.CatalogProviderName, modelCatalogProviderName(item))
 		qualifiedName := providerName + "/" + displayName
 		modelIDs = append(modelIDs, displayName)
 		providerModelRefs = append(providerModelRefs, qualifiedName)
@@ -152,7 +152,7 @@ func marshalGatewayModelSetting(name string, value any) (string, error) {
 	return string(raw), nil
 }
 
-func firstNonEmpty(values ...string) string {
+func firstNonEmptyCatalogValue(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
 			return trimmed

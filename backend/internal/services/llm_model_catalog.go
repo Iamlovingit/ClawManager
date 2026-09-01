@@ -141,7 +141,7 @@ func providerModelNameSet(items []models.LLMModel) map[string]struct{} {
 }
 
 func modelCatalogProviderName(item models.LLMModel) string {
-	name := firstNonEmpty(item.DisplayName, item.ProviderType, "provider")
+	name := firstNonEmptyCatalogValue(item.DisplayName, item.ProviderType, "provider")
 	// A slash separates the runtime provider name from its model id.
 	name = strings.ReplaceAll(name, "/", "-")
 	return strings.ReplaceAll(name, `\`, "-")
@@ -154,7 +154,7 @@ func uniqueDiscoveredModelAlias(item models.LLMModel, providerModelName string, 
 		return alias
 	}
 
-	base := firstNonEmpty(item.DisplayName, item.ProviderType, "provider") + "/" + alias
+	base := firstNonEmptyCatalogValue(item.DisplayName, item.ProviderType, "provider") + "/" + alias
 	for suffix, candidate := 2, base; ; suffix++ {
 		normalized := strings.ToLower(candidate)
 		if _, exists := used[normalized]; !exists {
