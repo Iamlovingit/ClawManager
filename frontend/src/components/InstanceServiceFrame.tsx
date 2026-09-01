@@ -13,6 +13,7 @@ interface InstanceServiceFrameProps {
   instanceType?: string;
   instanceMode?: string;
   availability: InstanceAvailability;
+  reloadToken?: number;
   workspaceVisible?: boolean;
   onWorkspaceVisibilityChange?: (visible: boolean) => void;
 }
@@ -46,6 +47,7 @@ export function InstanceServiceFrame({
   instanceType,
   instanceMode,
   availability,
+  reloadToken = 0,
   workspaceVisible,
   onWorkspaceVisibilityChange,
 }: InstanceServiceFrameProps) {
@@ -215,7 +217,11 @@ export function InstanceServiceFrame({
 
   return renderFrameShell(
       <iframe
-        key={isHermes ? `hermes-${instanceId}` : `frame-${instanceId}`}
+        key={
+          isHermes
+            ? `hermes-${instanceId}-${reloadToken}`
+            : `frame-${instanceId}-${reloadToken}`
+        }
         title={`${instanceName} service`}
         src={frameSrc}
         className="min-h-0 w-full flex-1 border-0 bg-white"
