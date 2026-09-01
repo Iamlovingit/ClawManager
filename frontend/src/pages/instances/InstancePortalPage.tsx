@@ -212,6 +212,7 @@ const InstancePortalPage: React.FC = () => {
     isRunning:
       selectedInstance?.status === "running" && shouldConnect && !isShellPortal,
     retainSessionOnStop: shouldConnect,
+    reloadOnAccessRefresh: selectedInstance?.type === "deepseek-harness",
     resolveEmbedUrl,
     failedMessage: t("instances.failedToGenerateAccessToken"),
   });

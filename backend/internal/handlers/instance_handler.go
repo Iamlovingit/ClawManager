@@ -1644,23 +1644,29 @@ func (h *InstanceHandler) ProxyInstance(c *gin.Context) {
 
 func (h *InstanceHandler) proxyAccessToken(c *gin.Context, id int) (string, bool) {
 	cookieName := fmt.Sprintf("instance_access_%d", id)
+	queryToken := strings.TrimSpace(c.Query("token"))
+	if queryToken != "" {
+		if accessToken, validateErr := h.accessService.ValidateToken(queryToken); validateErr == nil && accessToken.InstanceID == id {
+			h.promoteProxyAccessTokenCookie(c, id, cookieName, queryToken, accessToken)
+			return queryToken, true
+		}
+	}
+
 	if cookieToken, err := c.Cookie(cookieName); err == nil && strings.TrimSpace(cookieToken) != "" {
 		if accessToken, validateErr := h.accessService.ValidateToken(cookieToken); validateErr == nil && accessToken.InstanceID == id {
 			return cookieToken, true
 		}
 	}
 
-	queryToken := strings.TrimSpace(c.Query("token"))
 	if queryToken == "" {
 		utils.Error(c, http.StatusBadRequest, "Access token required")
 		return "", false
 	}
-	accessToken, err := h.accessService.ValidateToken(queryToken)
-	if err != nil || accessToken.InstanceID != id {
-		utils.Error(c, http.StatusUnauthorized, "Access token expired or invalid")
-		return "", false
-	}
+	utils.Error(c, http.StatusUnauthorized, "Access token expired or invalid")
+	return "", false
+}
 
+func (h *InstanceHandler) promoteProxyAccessTokenCookie(c *gin.Context, id int, cookieName, queryToken string, accessToken *services.AccessToken) {
 	// Promote only a validated ClawManager access token. Runtime applications may
 	// also use a token query parameter for their own websocket/session protocol.
 	cookiePath := fmt.Sprintf("/api/v1/instances/%d/proxy", id)
@@ -1683,7 +1689,6 @@ func (h *InstanceHandler) proxyAccessToken(c *gin.Context, id int) (string, bool
 		cookieSecure,
 		true,
 	)
-	return queryToken, true
 }
 
 func (h *InstanceHandler) proxyInstanceWithToken(c *gin.Context, id int, token string) {
