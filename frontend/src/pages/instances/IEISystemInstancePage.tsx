@@ -5,6 +5,7 @@ import { Link, useParams } from "react-router-dom";
 import { WorkspaceFileManager } from "../../components/WorkspaceFileManager";
 import { useExpiringResourceRenewal } from "../../hooks/useExpiringResourceRenewal";
 import { useRuntimeCertificateTrust } from "../../hooks/useRuntimeCertificateTrust";
+import { refreshDedicatedRuntimeCookie } from "../../lib/instanceAccess";
 import { prepareOpenClawControlUIStorage } from "../../lib/openclawControlStorage";
 import {
   ieiSystemService,
@@ -38,20 +39,6 @@ const restartTimeoutMs = 180_000;
 
 function wait(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
-async function refreshDedicatedRuntimeCookie(accessURL: string) {
-  const target = new URL(resolveEmbedUrl(accessURL), window.location.href);
-  if (target.origin === window.location.origin || !target.searchParams.has("token")) return;
-  target.pathname = "/__clawmanager_access_refresh";
-  target.hash = "";
-  await window.fetch(target.toString(), {
-    method: "GET",
-    credentials: "include",
-    mode: "no-cors",
-    cache: "no-store",
-    referrerPolicy: "no-referrer",
-  });
 }
 
 export default function IEISystemInstancePage() {
@@ -113,7 +100,7 @@ export default function IEISystemInstancePage() {
   const renewAccess = useCallback(async () => {
     await ieiSystemService.refreshSession();
     const nextAccess = await ieiSystemService.generateAccess(instanceID);
-    await refreshDedicatedRuntimeCookie(nextAccess.access_url);
+    await refreshDedicatedRuntimeCookie(resolveEmbedUrl(nextAccess.access_url));
     if (!mountedRef.current) return;
     // Updating the iframe URL would reload the running agent UI. The fresh
     // cookie is installed in the background, so keep the existing src while
