@@ -458,6 +458,8 @@ func safeWorkspaceDownloadName(name string) string {
 
 func handleWorkspaceFileError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, services.ErrWorkspaceUpgradeBusy):
+		utils.Error(c, http.StatusConflict, err.Error())
 	case errors.Is(err, services.ErrWorkspacePathNotFound):
 		utils.Error(c, http.StatusNotFound, err.Error())
 	case errors.Is(err, services.ErrWorkspacePreviewTooLarge), errors.Is(err, services.ErrWorkspaceUploadTooLarge):
