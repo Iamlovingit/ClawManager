@@ -1,9 +1,12 @@
 import { CompactTimestamp } from "./CompactTimestamp";
 import { WorkspaceTextEditor, editableWorkspaceName, type WorkspaceText } from "./WorkspaceTextEditor";
 import "../styles/workspace-time.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Download,
   Eye,
   File,
@@ -11,9 +14,12 @@ import {
   Folder,
   FolderPlus,
   FolderUp,
+  PanelRightClose,
+  PanelRightOpen,
   FilePenLine,
   TextCursorInput,
   RefreshCw,
+  Search,
   Trash2,
   Upload,
   X,
@@ -21,7 +27,7 @@ import {
 import { useI18n } from "../contexts/I18nContext";
 import { interpolate, translate, type Locale } from "../lib/i18n";
 import { workspaceService } from "../services/workspaceService";
-import type { WorkspaceEntry, WorkspacePreview } from "../types/workspace";
+import type { WorkspaceEntry, WorkspacePreview, WorkspaceSearchResponse } from "../types/workspace";
 
 interface WorkspaceFileManagerProps {
   instanceId: number;
@@ -40,6 +46,7 @@ export interface WorkspaceFileOperations {
   readText?(instanceId: number, path: string, signal?: AbortSignal): Promise<WorkspaceText>;
   saveText?(instanceId: number, path: string, text: string, version: string): Promise<WorkspaceText>;
   list(instanceId: number, path?: string): Promise<WorkspaceEntry[]>;
+  search?(instanceId: number, query: string, limit?: number): Promise<WorkspaceSearchResponse>;
   preview(instanceId: number, path: string): Promise<WorkspacePreview>;
   previewBlob(instanceId: number, path: string): Promise<Blob>;
   downloadBlob(instanceId: number, path: string): Promise<Blob>;
@@ -51,6 +58,10 @@ export interface WorkspaceFileOperations {
 
 const invalidNamePattern = /[\\/]/;
 const workspacePageSize = 250;
+// Search results reuse the directory-list pagination; ask the backend for a
+// larger window (backend clamps it to its own ceiling) so users can page
+// through more matches instead of stopping at the default 200.
+const workspaceSearchLimit = 1000;
 
 function joinPath(base: string, name: string) {
   return [base, name].filter(Boolean).join("/");
@@ -232,6 +243,57 @@ function isWorkspaceEntryExistsError(err: unknown) {
   return message.includes("already exists") || message.includes("entry already exists");
 }
 
+type WorkspaceSortColumn = "name" | "size" | "modified";
+type WorkspaceSortDirection = "asc" | "desc";
+
+function compareWorkspaceEntries(
+  left: WorkspaceEntry,
+  right: WorkspaceEntry,
+  column: WorkspaceSortColumn,
+): number {
+  if (column === "name") {
+    return left.name.localeCompare(right.name, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+  if (column === "size") {
+    return left.size - right.size;
+  }
+  return (
+    new Date(left.modified_at).getTime() - new Date(right.modified_at).getTime()
+  );
+}
+
+function SortHeader({
+  label,
+  column,
+  activeColumn,
+  direction,
+  onToggle,
+}: {
+  label: string;
+  column: WorkspaceSortColumn;
+  activeColumn: WorkspaceSortColumn;
+  direction: WorkspaceSortDirection;
+  onToggle: (column: WorkspaceSortColumn) => void;
+}) {
+  const isActive = activeColumn === column;
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-1 uppercase hover:text-slate-700"
+      title={label}
+      onClick={() => onToggle(column)}
+    >
+      {label}
+      {isActive && direction === "asc" && <ArrowUp className="h-3 w-3" />}
+      {isActive && direction === "desc" && <ArrowDown className="h-3 w-3" />}
+      {!isActive && <ArrowUpDown className="h-3 w-3 text-slate-300 hover:text-slate-400" />}
+    </button>
+  );
+}
+
 function EntryIcon({ entry }: { entry: WorkspaceEntry }) {
   if (entry.is_dir) {
     return <Folder className="h-4 w-4 text-slate-500" />;
@@ -240,6 +302,17 @@ function EntryIcon({ entry }: { entry: WorkspaceEntry }) {
     return <FileText className="h-4 w-4 text-slate-500" />;
   }
   return <File className="h-4 w-4 text-slate-500" />;
+}
+
+function ariaSortValue(
+  column: WorkspaceSortColumn,
+  activeColumn: WorkspaceSortColumn,
+  direction: WorkspaceSortDirection,
+): "ascending" | "descending" | undefined {
+  if (column !== activeColumn) {
+    return undefined;
+  }
+  return direction === "asc" ? "ascending" : "descending";
 }
 
 export function WorkspaceFileManager({
@@ -279,11 +352,27 @@ export function WorkspaceFileManager({
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
+  const [sortColumn, setSortColumn] = useState<WorkspaceSortColumn>("name");
+  const [sortDirection, setSortDirection] = useState<WorkspaceSortDirection>("asc");
+  const [expanded, setExpanded] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const workspaceLabel = translateLabel("workspaceFileManager.workspace");
+
+  const exitSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchInput("");
+    setDebouncedSearchQuery("");
+    setPageIndex(0);
+  }, []);
+
   useEffect(() => {
     setCurrentPath(normalizeWorkspacePath(initialPath));
     setPreviewPath(null);
-	setEditPath(null);
-	setPageIndex(0);
+    setEditPath(null);
+    setPageIndex(0);
   }, [cacheKey, initialPath]);
 
   useEffect(() => {
@@ -309,6 +398,41 @@ export function WorkspaceFileManager({
     };
   }, [uploadMenuOpen]);
 
+  useEffect(() => {
+    if (!expanded && !searchOpen) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      // Esc exits search first; a second Esc closes the expanded drawer.
+      if (searchOpen) {
+        exitSearch();
+      } else {
+        setExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [expanded, searchOpen, exitSearch]);
+
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+    }
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchInput.trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput, searchOpen]);
+
   const entriesQuery = useQuery({
     queryKey: ["workspace", cacheKey, currentPath],
     queryFn: () => service.list(instanceId, currentPath),
@@ -317,6 +441,20 @@ export function WorkspaceFileManager({
     refetchOnWindowFocus: Boolean(service.readText),
     refetchInterval: service.readText ? 5000 : false,
   });
+
+  const isSearchActive =
+    searchOpen && Boolean(service.search) && debouncedSearchQuery.length >= 2;
+
+  const searchQuery = useQuery({
+    queryKey: ["workspace-search", cacheKey, debouncedSearchQuery],
+    queryFn: () => service.search!(instanceId, debouncedSearchQuery, workspaceSearchLimit),
+    enabled: isSearchActive,
+  });
+
+  // Search term changes and search toggles restart pagination from page 1.
+  useEffect(() => {
+    setPageIndex(0);
+  }, [debouncedSearchQuery, isSearchActive]);
 
   const previewQuery = useQuery({
     queryKey: ["workspace-preview", cacheKey, previewPath],
@@ -371,9 +509,14 @@ export function WorkspaceFileManager({
   }, []);
 
   const invalidateCurrentPath = async () => {
-    await queryClient.invalidateQueries({
-      queryKey: ["workspace", cacheKey, currentPath],
-    });
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["workspace", cacheKey, currentPath],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["workspace-search", cacheKey],
+      }),
+    ]);
   };
 
   useEffect(() => {
@@ -546,41 +689,81 @@ export function WorkspaceFileManager({
   };
 
   const preview = previewQuery.data;
-  const entries = entriesQuery.data ?? [];
-  const pageCount = Math.max(1, Math.ceil(entries.length / workspacePageSize));
+  const entries = useMemo(() => entriesQuery.data ?? [], [entriesQuery.data]);
+
+  const sortedEntries = useMemo(() => {
+    const sorted = [...entries];
+    sorted.sort((left, right) => {
+      const comparison = compareWorkspaceEntries(left, right, sortColumn);
+      return sortDirection === "asc" ? comparison : -comparison;
+    });
+    return sorted;
+  }, [entries, sortColumn, sortDirection]);
+
+  const searchEntries = useMemo(
+    () => searchQuery.data?.entries ?? [],
+    [searchQuery.data],
+  );
+  const searchLimit = searchQuery.data?.limit;
+
+  const sortedSearchResults = useMemo(() => {
+    const sorted = [...searchEntries];
+    sorted.sort((left, right) => {
+      const comparison = compareWorkspaceEntries(left, right, sortColumn);
+      return sortDirection === "asc" ? comparison : -comparison;
+    });
+    return sorted;
+  }, [searchEntries, sortColumn, sortDirection]);
+
+  const openEntry = (entry: WorkspaceEntry) => {
+    if (entry.is_dir) {
+      setCurrentPath(entry.path);
+      setPageIndex(0);
+      if (isSearchActive) {
+        exitSearch();
+      }
+    } else {
+      setPreviewPath(entry.path);
+    }
+  };
+
+  // Search results share the directory-listing pagination: page over whichever
+  // list is active instead of slicing the directory entries only.
+  const activeEntries = isSearchActive ? sortedSearchResults : sortedEntries;
+  const pageCount = Math.max(1, Math.ceil(activeEntries.length / workspacePageSize));
   const visiblePageIndex = Math.min(pageIndex, pageCount - 1);
-  const visibleEntries = entries.slice(
+  const visibleEntries = activeEntries.slice(
     visiblePageIndex * workspacePageSize,
     (visiblePageIndex + 1) * workspacePageSize,
   );
 
-  return (
-    <section className="cm-surface flex h-full min-h-0 min-w-0 flex-col overflow-hidden max-xl:min-h-[360px]">
-      <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">
-        <div className="min-w-0">
-          <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
-            {breadcrumbItems(
-              currentPath,
-              initialPath,
-              translateLabel("workspaceFileManager.workspace"),
-            ).map((item, index, items) => (
-              <span key={item.key} className="flex min-w-0 items-center gap-1">
-                <button
-                  type="button"
-                  className="max-w-[140px] truncate rounded px-1.5 py-1 font-medium text-slate-700 hover:bg-slate-100"
-                  onClick={() => {
-                    setCurrentPath(item.path);
-                    setPageIndex(0);
-                  }}
-                >
-                  {item.label}
-                </button>
-                {index < items.length - 1 && <span className="text-slate-400">/</span>}
-              </span>
-            ))}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+  const listLoading = isSearchActive
+    ? searchQuery.isLoading || searchQuery.isFetching || !searchQuery.data
+    : entriesQuery.isLoading;
+  const listError = isSearchActive && searchQuery.isError ? searchQuery.error : null;
+  const listEmpty = isSearchActive
+    ? !listLoading && !searchQuery.isError && sortedSearchResults.length === 0
+    : entries.length === 0;
+  const searchResultsCapped =
+    isSearchActive && searchLimit !== undefined && sortedSearchResults.length >= searchLimit;
+
+  const toggleSort = (column: WorkspaceSortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection((direction) => (direction === "asc" ? "desc" : "asc"));
+    } else {
+      setSortColumn(column);
+      setSortDirection("asc");
+    }
+  };
+
+  const content = (
+    <>
+      <div className="border-b border-slate-200 px-3 py-2">
+        <div className="flex items-center justify-between gap-3">
+          <span className="shrink-0 truncate px-1.5 py-1 text-sm font-bold text-slate-700">
+            {translateLabel("workspaceFileManager.fileManager")}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">
           {canWrite && (
             <>
               <input
@@ -603,11 +786,39 @@ export function WorkspaceFileManager({
           <button
             type="button"
             className="cm-icon-button"
+            title={
+              expanded
+                ? translateLabel("workspaceFileManager.collapse")
+                : translateLabel("workspaceFileManager.expand")
+            }
+            aria-pressed={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? (
+              <PanelRightClose className="h-4 w-4" />
+            ) : (
+              <PanelRightOpen className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            className="cm-icon-button"
             title={translateLabel("workspaceFileManager.refresh")}
             onClick={() => void invalidateCurrentPath()}
           >
             <RefreshCw className={`h-4 w-4 ${entriesQuery.isFetching ? "animate-spin" : ""}`} />
           </button>
+          {service.search && (
+            <button
+              type="button"
+              className="cm-icon-button"
+              title={translateLabel("workspaceFileManager.search")}
+              aria-pressed={searchOpen}
+              onClick={() => (searchOpen ? exitSearch() : setSearchOpen(true))}
+            >
+              <Search className={`h-4 w-4 ${searchOpen ? "text-blue-600" : ""}`} />
+            </button>
+          )}
           {onSelectDirectory && (
             <button
               type="button"
@@ -671,8 +882,55 @@ export function WorkspaceFileManager({
               </div>
             </>
           )}
+          </div>
+        </div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-sm">
+          {breadcrumbItems(currentPath, initialPath, workspaceLabel).map((item, index, items) => (
+            <span key={item.key} className="flex min-w-0 items-center gap-1">
+              <button
+                type="button"
+                className="max-w-[140px] truncate rounded px-1.5 py-1 font-medium text-slate-700 hover:bg-slate-100"
+                onClick={() => {
+                  setCurrentPath(item.path);
+                  setPageIndex(0);
+                }}
+              >
+                {item.label}
+              </button>
+              {index < items.length - 1 && <span className="text-slate-400">/</span>}
+            </span>
+          ))}
         </div>
       </div>
+
+      {searchOpen && service.search && (
+        <div className="border-b border-slate-200 px-3 py-2">
+          <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 focus-within:border-blue-400">
+            <Search className="h-4 w-4 shrink-0 text-slate-400" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              className="min-w-0 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+              placeholder={translateLabel("workspaceFileManager.searchPlaceholder")}
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+            />
+            <button
+              type="button"
+              className="cm-icon-button h-6 w-6 shrink-0"
+              title={translateLabel("workspaceFileManager.close")}
+              onClick={exitSearch}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          {searchInput.trim().length > 0 && searchInput.trim().length < 2 && (
+            <p className="mt-1 text-xs text-slate-400">
+              {translateLabel("workspaceFileManager.searchMinChars")}
+            </p>
+          )}
+        </div>
+      )}
 
       {uploadStatus && (
         <div className="border-b border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
@@ -689,31 +947,69 @@ export function WorkspaceFileManager({
 
       <div className="flex min-h-0 flex-1 flex-col">
         <div className={`workspace-files-container ${previewPath ? "hidden" : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"}`}>
-          {entriesQuery.isLoading ? (
-            <div className="flex h-48 items-center justify-center text-sm text-slate-500">
-              {translateLabel("workspaceFileManager.loading")}
+          {listError ? (
+            <div className="flex h-48 items-center justify-center px-4 text-center text-sm text-red-600">
+              {getErrorMessage(listError, translateLabel("workspaceFileManager.actionFailed"))}
             </div>
-          ) : entriesQuery.isError && !entriesQuery.data ? (
+          ) : listLoading ? (
             <div className="flex h-48 items-center justify-center text-sm text-slate-500">
-              <button type="button" disabled={entriesQuery.isFetching} onClick={() => void entriesQuery.refetch()} className="rounded border px-3 py-2 disabled:opacity-50">
-                {translateLabel("common.retry")}
-              </button>
+              {isSearchActive
+                ? translateLabel("workspaceFileManager.searching")
+                : translateLabel("workspaceFileManager.loading")}
             </div>
-          ) : entries.length === 0 ? (
+          ) : listEmpty ? (
             <div className="flex h-48 items-center justify-center text-sm text-slate-500">
-              {translateLabel("workspaceFileManager.noFiles")}
+              {isSearchActive
+                ? translateLabel("workspaceFileManager.noSearchResults")
+                : translateLabel("workspaceFileManager.noFiles")}
             </div>
           ) : (
             <>
-            <table className="workspace-files-table w-full table-fixed divide-y divide-slate-200 text-sm">
+              {searchResultsCapped && (
+                <div className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  {translateLabel("workspaceFileManager.searchResultsCapped", {
+                    limit: searchLimit ?? 0,
+                  })}
+                </div>
+              )}
+              <table className="workspace-files-table w-full table-fixed divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-normal text-slate-500">
                 <tr>
-                  <th className="px-3 py-2">{translateLabel("workspaceFileManager.name")}</th>
-                  <th className="w-14 px-2 py-2">
-                    {translateLabel("workspaceFileManager.size")}
+                  <th
+                    className="px-3 py-2"
+                    aria-sort={ariaSortValue("name", sortColumn, sortDirection)}
+                  >
+                    <SortHeader
+                      label={translateLabel("workspaceFileManager.name")}
+                      column="name"
+                      activeColumn={sortColumn}
+                      direction={sortDirection}
+                      onToggle={toggleSort}
+                    />
                   </th>
-                  <th className="workspace-time-column w-28 px-2 py-2">
-                    {translateLabel("workspaceFileManager.modified")}
+                  <th
+                    className={expanded ? "px-2 py-2 xl:w-24" : "w-14 px-2 py-2"}
+                    aria-sort={ariaSortValue("size", sortColumn, sortDirection)}
+                  >
+                    <SortHeader
+                      label={translateLabel("workspaceFileManager.size")}
+                      column="size"
+                      activeColumn={sortColumn}
+                      direction={sortDirection}
+                      onToggle={toggleSort}
+                    />
+                  </th>
+                  <th
+                    className="workspace-time-column w-28 px-2 py-2"
+                    aria-sort={ariaSortValue("modified", sortColumn, sortDirection)}
+                  >
+                    <SortHeader
+                      label={translateLabel("workspaceFileManager.modified")}
+                      column="modified"
+                      activeColumn={sortColumn}
+                      direction={sortDirection}
+                      onToggle={toggleSort}
+                    />
                   </th>
                   <th className="w-40 px-2 py-2 text-right">
                     {translateLabel("workspaceFileManager.actions")}
@@ -727,19 +1023,21 @@ export function WorkspaceFileManager({
                       <button
                         type="button"
                         className="flex w-full min-w-0 items-center gap-2 text-left"
-                        onClick={() => {
-                          if (entry.is_dir) {
-                            setCurrentPath(entry.path);
-                            setPageIndex(0);
-                          } else {
-                            setPreviewPath(entry.path);
-                          }
-                        }}
+                        onClick={() => openEntry(entry)}
                       >
                         <span className="shrink-0">
                           <EntryIcon entry={entry} />
                         </span>
-                        <WorkspaceEntryName name={entry.name} />
+                        {isSearchActive ? (
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <WorkspaceEntryName name={entry.name} />
+                            <span className="block truncate text-xs text-slate-400">
+                              {parentPath(entry.path) || workspaceLabel}
+                            </span>
+                          </span>
+                        ) : (
+                          <WorkspaceEntryName name={entry.name} />
+                        )}
                       </button>
                       <CompactTimestamp className="workspace-time-inline" value={entry.modified_at} locale={effectiveLocale}/>
                     </td>
@@ -798,30 +1096,30 @@ export function WorkspaceFileManager({
                   </tr>
                 ))}
               </tbody>
-            </table>
-            {pageCount > 1 && (
-              <div className="sticky bottom-0 flex items-center justify-between border-t border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                <button
-                  type="button"
-                  className="rounded border border-slate-200 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={visiblePageIndex === 0}
-                  onClick={() => setPageIndex((value) => Math.max(0, value - 1))}
-                >
-                  {translateLabel("workspaceFileManager.previousPage")}
-                </button>
-                <span>
-                  {translateLabel("workspaceFileManager.pageStatus", {current: visiblePageIndex + 1, total: pageCount})}
-                </span>
-                <button
-                  type="button"
-                  className="rounded border border-slate-200 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={visiblePageIndex >= pageCount - 1}
-                  onClick={() => setPageIndex((value) => Math.min(pageCount - 1, value + 1))}
-                >
-                  {translateLabel("workspaceFileManager.nextPage")}
-                </button>
-              </div>
-            )}
+              </table>
+              {pageCount > 1 && (
+                <div className="sticky bottom-0 flex items-center justify-between border-t border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                  <button
+                    type="button"
+                    className="rounded border border-slate-200 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={visiblePageIndex === 0}
+                    onClick={() => setPageIndex((value) => Math.max(0, value - 1))}
+                  >
+                    {translateLabel("workspaceFileManager.previousPage")}
+                  </button>
+                  <span>
+                    {translateLabel("workspaceFileManager.pageStatus", {current: visiblePageIndex + 1, total: pageCount})}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-200 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={visiblePageIndex >= pageCount - 1}
+                    onClick={() => setPageIndex((value) => Math.min(pageCount - 1, value + 1))}
+                  >
+                    {translateLabel("workspaceFileManager.nextPage")}
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -836,6 +1134,23 @@ export function WorkspaceFileManager({
           translateLabel={translateLabel}
         />
       </div>
+    </>
+  );
+
+  return expanded ? (
+    <>
+      <div
+        role="presentation"
+        className="fixed inset-0 z-40 bg-slate-950/40"
+        onClick={() => setExpanded(false)}
+      />
+      <section className="cm-surface fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-hidden shadow-2xl sm:w-1/2">
+        {content}
+      </section>
+    </>
+  ) : (
+    <section className="cm-surface flex h-full min-h-0 min-w-0 flex-col overflow-hidden max-xl:min-h-[360px]">
+      {content}
     </section>
   );
 }

@@ -1,6 +1,6 @@
 import axios from "axios";
 import type { WorkspaceFileOperations } from "../components/WorkspaceFileManager";
-import type { WorkspaceEntry, WorkspacePreview } from "../types/workspace";
+import type { WorkspaceEntry, WorkspacePreview, WorkspaceSearchResponse } from "../types/workspace";
 
 export interface IEISystemSession {
   owner: string;
@@ -177,6 +177,13 @@ export const ieiSystemWorkspaceService: WorkspaceFileOperations = {
       params: { path },
     });
     return response.data.data.entries;
+  },
+
+  async search(instanceId: number, query: string, limit?: number): Promise<WorkspaceSearchResponse> {
+    const response = await ieiAPI.get(`/instances/${instanceId}/workspace/search`, {
+      params: { q: query, ...(limit ? { limit } : {}) },
+    });
+    return response.data.data;
   },
 
   async preview(instanceId: number, path: string): Promise<WorkspacePreview> {
