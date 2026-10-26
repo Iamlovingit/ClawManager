@@ -4,6 +4,7 @@ import AdminLayout from '../../components/AdminLayout';
 import UpgradeRecoveryActions from '../../components/UpgradeRecoveryActions';
 import { useI18n } from '../../contexts/I18nContext';
 import PasswordSettingsSection from '../../components/PasswordSettingsSection';
+import RoutingClassifierSettings from '../../components/RoutingClassifierSettings';
 import {
   systemSettingsService,
   type SystemImageSetting,
@@ -953,6 +954,8 @@ const SystemSettingsPage: React.FC = () => {
     <AdminLayout title={t('admin.systemSettings')}>
       <div className="space-y-6">
         <PasswordSettingsSection />
+
+        <RoutingClassifierSettings />
 
         <section className="app-panel p-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

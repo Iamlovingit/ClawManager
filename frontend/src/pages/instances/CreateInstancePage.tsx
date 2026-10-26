@@ -86,7 +86,6 @@ const isProOnlyInstanceType = (type: string) =>
   type === "workbuddy" ||
   type === "codex" ||
   type === "claude-code";
-const isLiteOnlyInstanceType = (type: string) => type === "opencode";
 const DESKTOP_STREAM_PROFILES: Array<{
   id: DesktopStreamProfile;
   labelKey: string;
@@ -625,9 +624,7 @@ const CreateInstancePage: React.FC = () => {
   const selectedRuntimeType = selectedMode === "lite" ? "gateway" : "desktop";
   const availableTypesForMode = availableTypes.filter(
     (item) =>
-      selectedMode === "pro"
-        ? !isLiteOnlyInstanceType(item.id)
-        : !isProOnlyInstanceType(item.id),
+      selectedMode === "pro" || !isProOnlyInstanceType(item.id),
   );
   const selectedType = availableTypesForMode.find(
     (item) => item.id === formData.type,

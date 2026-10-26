@@ -2844,6 +2844,15 @@ func TestRuntimeSchedulerLegacyRolloutIsolationAcrossLiteRuntimes(t *testing.T) 
 			}
 			deployments := &fakeRuntimeDeploymentService{}
 			scheduler := NewRuntimeScheduler(newFakeRuntimeInstanceRepo(), podRepo, newFakeRuntimeBindingRepo(), rolloutRepo, &fakeRuntimeAgentClient{}, NewRuntimeEventService(nil), nil, deployments, time.Second)
+			if runtimeType == RuntimeTypeOpenCode {
+				if err := scheduler.StartRollout(ctx, 91); !errors.Is(err, models.ErrOpenCodeSafeUpgradeRequired) {
+					t.Fatalf("unsafe OpenCode rollout: %v", err)
+				}
+				if len(deployments.rolloutImageCalls) != 0 || len(deployments.upgradePoolCalls) != 0 {
+					t.Fatal("unsafe rollout mutated the pool")
+				}
+				return
+			}
 			if err := scheduler.StartRollout(ctx, 91); err != nil {
 				t.Fatal(err)
 			}
@@ -2917,6 +2926,15 @@ func TestRuntimeSchedulerLegacyRolloutPrefersLiveDeploymentInventory(t *testing.
 				RuntimeType: runtimeType, Namespace: "runtime-system", DeploymentName: liveName, PodName: liveName + "-pod", State: "ready",
 			}}}
 			scheduler := NewRuntimeScheduler(newFakeRuntimeInstanceRepo(), podRepo, newFakeRuntimeBindingRepo(), rolloutRepo, &fakeRuntimeAgentClient{}, NewRuntimeEventService(nil), nil, deployments, time.Second, WithRuntimeSchedulerNamespace("runtime-system"))
+			if runtimeType == RuntimeTypeOpenCode {
+				if err := scheduler.StartRollout(ctx, 93); !errors.Is(err, models.ErrOpenCodeSafeUpgradeRequired) {
+					t.Fatalf("unsafe OpenCode rollout: %v", err)
+				}
+				if len(deployments.rolloutImageCalls) != 0 {
+					t.Fatal("unsafe rollout mutated the pool")
+				}
+				return
+			}
 			if err := scheduler.StartRollout(ctx, 93); err != nil {
 				t.Fatal(err)
 			}
