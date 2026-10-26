@@ -578,3 +578,4 @@ export const PRESET_CONFIGS = {
 };
 
 export const DEFAULT_LITE_DISK_GB = 5;
+export const MINIMUM_PRO_DISK_GB = 10;
