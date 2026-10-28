@@ -83,7 +83,7 @@ func TestRuntimeSchedulerAssignsCreatingInstanceToReadyPod(t *testing.T) {
 		},
 	}
 	events := &fakeRuntimeEventService{}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -204,7 +204,7 @@ func TestRuntimeSchedulerRecoversHistoricalHermesUpgradeGuardError(t *testing.T)
 	}
 	podRepo := &fakeRuntimePodRepo{pods: map[int64]*models.RuntimePod{pod.ID: &pod}, schedulable: []models.RuntimePod{pod}}
 	agent := &fakeRuntimeAgentClient{createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-145", Status: "running"}}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		newFakeRuntimeBindingRepo(),
@@ -215,6 +215,7 @@ func TestRuntimeSchedulerRecoversHistoricalHermesUpgradeGuardError(t *testing.T)
 		&fakeRuntimeDeploymentService{},
 		time.Second,
 		WithRuntimeUpgradeService(&RuntimeUpgradeService{}),
+		WithRuntimeSchedulerNamespace("runtime-system"),
 	)
 
 	if err := scheduler.reconcile(ctx); err != nil {
@@ -256,7 +257,7 @@ func TestRuntimeSchedulerReplacesOlderGenerationBindingForCreatingInstance(t *te
 		GatewayID: "gw-18-4",
 		Status:    "running",
 	}}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -375,7 +376,7 @@ func TestRuntimeSchedulerSkipsAgentRejectedGatewayPort(t *testing.T) {
 			Status:    "running",
 		},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -450,7 +451,7 @@ func TestRuntimeSchedulerStoresStartingGatewayBindingAsCreating(t *testing.T) {
 			Status:    "starting",
 		},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -678,7 +679,7 @@ func TestRuntimeSchedulerMarksInstanceErrorWhenGatewayCreateReturnsErrorStatus(t
 		},
 	}
 	events := &fakeRuntimeEventService{}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -758,7 +759,7 @@ func TestRuntimeSchedulerThrottlesGatewayStartsWhenPodHasCreatingBinding(t *test
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-83", Port: 20083, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		newFakeRuntimeInstanceRepo(),
 		podRepo,
 		bindingRepo,
@@ -823,7 +824,7 @@ func TestRuntimeSchedulerPreservesPendingBindingWhenCreateOutcomeIsUnknown(t *te
 	podRepo := &fakeRuntimePodRepo{pods: map[int64]*models.RuntimePod{9: &pod}, schedulable: []models.RuntimePod{pod}}
 	bindingRepo := newFakeRuntimeBindingRepo()
 	agent := &fakeRuntimeAgentClient{createErr: context.DeadlineExceeded}
-	scheduler := NewRuntimeScheduler(newFakeRuntimeInstanceRepo(), podRepo, bindingRepo, &fakeRuntimeRolloutRepo{}, agent, &fakeRuntimeEventService{}, nil, &fakeRuntimeDeploymentService{}, time.Second)
+	scheduler := newLiveFixtureRuntimeScheduler(newFakeRuntimeInstanceRepo(), podRepo, bindingRepo, &fakeRuntimeRolloutRepo{}, agent, &fakeRuntimeEventService{}, nil, &fakeRuntimeDeploymentService{}, time.Second)
 	workspace := "/workspaces/openclaw/user-45/instance-91"
 
 	err := scheduler.assignInstance(ctx, models.Instance{ID: 91, UserID: 45, Type: RuntimeTypeOpenClaw, RuntimeType: RuntimeBackendGateway, InstanceMode: InstanceModeLite, Status: "creating", WorkspacePath: &workspace, RuntimeGeneration: 3})
@@ -875,7 +876,7 @@ func TestRuntimeSchedulerReconcileWaitsWhenGatewayStartInFlight(t *testing.T) {
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-84", Port: 20084, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -989,7 +990,7 @@ func TestRuntimeSchedulerAllowsConcurrentGatewayCreationPerPodWithinLimit(t *tes
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw", Port: 20081, Status: "running"},
 		createDelay:    25 * time.Millisecond,
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		newFakeRuntimeInstanceRepo(),
 		podRepo,
 		bindingRepo,
@@ -1051,7 +1052,7 @@ func TestRuntimeSchedulerReconcileStartsBatchConcurrently(t *testing.T) {
 		createDelay:    25 * time.Millisecond,
 	}
 	bindingRepo := newFakeRuntimeBindingRepo()
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		&fakeRuntimePodRepo{
 			pods:        map[int64]*models.RuntimePod{9: &pod},
@@ -1129,7 +1130,7 @@ func TestRuntimeSchedulerReconcileAssignsSinglePortsToHermesBatch(t *testing.T) 
 		createDelay:    25 * time.Millisecond,
 	}
 	bindingRepo := newFakeRuntimeBindingRepo()
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		&fakeRuntimePodRepo{
 			pods:        map[int64]*models.RuntimePod{10: &pod},
@@ -1212,7 +1213,7 @@ func TestRuntimeSchedulerPassesGatewayEnvironmentToRuntimeAgent(t *testing.T) {
 			Status:    "starting",
 		},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		newFakeRuntimeBindingRepo(),
@@ -1296,7 +1297,7 @@ func TestRuntimeSchedulerUsesTeamSharedGIDForTeamLiteGateway(t *testing.T) {
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-130-1", Port: 20030, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		newFakeRuntimeBindingRepo(),
@@ -1409,7 +1410,7 @@ func TestRuntimeSchedulerScalesOutWhenAllReadyPodsAtCapacity(t *testing.T) {
 	}
 	deployments := &fakeRuntimeDeploymentService{}
 	agent := &fakeRuntimeAgentClient{}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		newFakeRuntimeBindingRepo(),
@@ -1667,7 +1668,7 @@ func TestRuntimeSchedulerReconcileAssignsDesiredRunningInstanceWithMissingBindin
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-18", Port: 20018, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		newFakeRuntimeBindingRepo(),
@@ -1717,7 +1718,7 @@ func TestRuntimeSchedulerReconcileRetriesRecoverableNoSchedulableError(t *testin
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-68", Port: 20068, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		newFakeRuntimeBindingRepo(),
@@ -1771,7 +1772,7 @@ func TestRuntimeSchedulerReconcileRetriesUnboundGatewayStartFailureAfterRuntimeU
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-970-26", Port: 20000, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		newFakeRuntimeBindingRepo(),
@@ -1817,7 +1818,7 @@ func TestRuntimeSchedulerRecoversConfirmedLegacyGatewayExitWithBinding(t *testin
 		State: RuntimeGatewayBindingError, Generation: 27,
 	}
 	agent := &fakeRuntimeAgentClient{createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-971-27", Status: "running"}}
-	scheduler := NewRuntimeScheduler(instanceRepo, podRepo, bindingRepo, &fakeRuntimeRolloutRepo{}, agent, NewRuntimeEventService(nil), nil, &fakeRuntimeDeploymentService{}, time.Second)
+	scheduler := newLiveFixtureRuntimeScheduler(instanceRepo, podRepo, bindingRepo, &fakeRuntimeRolloutRepo{}, agent, NewRuntimeEventService(nil), nil, &fakeRuntimeDeploymentService{}, time.Second)
 
 	if err := scheduler.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile returned error: %v", err)
@@ -2169,7 +2170,7 @@ func TestRuntimeSchedulerCleansUpGatewayAndReleasesSlotWhenBindingCreateFails(t 
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-22", Port: 20022, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -2238,7 +2239,7 @@ func TestRuntimeSchedulerClearsStaleErrorBindingAndRetriesBindingCreate(t *testi
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-218-5", Port: 20000, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,
@@ -2325,7 +2326,7 @@ func TestRuntimeSchedulerPreservesGatewayBindingAndSlotWhenWorkspacePathUpdateFa
 	agent := &fakeRuntimeAgentClient{
 		createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-23", Port: 20023, Status: "running"},
 	}
-	scheduler := NewRuntimeScheduler(
+	scheduler := newLiveFixtureRuntimeScheduler(
 		instanceRepo,
 		podRepo,
 		bindingRepo,

@@ -93,3 +93,10 @@ func (r *runtimeRolloutRepository) UpdateStatus(ctx context.Context, id int64, s
 	}
 	return nil
 }
+
+// Freeze ordinary placement scope before image mutation. Existing historical
+// records are read compatibly, never retroactively rewritten.
+func (r *runtimeRolloutRepository) SaveOrdinarySourceImages(ctx context.Context, id int64, source string) error {
+	_, err := r.sess.SQL().ExecContext(ctx, `UPDATE runtime_rollouts SET source_images_json=? WHERE id=? AND preflight_id IS NULL AND source_images_json IS NULL AND status IN ('pending','running')`, source, id)
+	return err
+}

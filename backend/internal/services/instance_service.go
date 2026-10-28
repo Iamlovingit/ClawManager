@@ -18,6 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"clawreef/internal/backupgate"
 	"clawreef/internal/models"
 	"clawreef/internal/repository"
 	"clawreef/internal/services/k8s"
@@ -286,27 +287,28 @@ type InstanceStatus struct {
 
 // instanceService implements InstanceService
 type instanceService struct {
-	instanceRepo          repository.InstanceRepository
-	quotaRepo             repository.QuotaRepository
-	llmModelRepo          repository.LLMModelRepository
-	gatewayKeyRepo        repository.GatewayKeyRepository
-	expandedModelCatalog  ExpandedLLMModelCatalog
-	openClawConfigService OpenClawConfigService
-	allowPrivilegedPods   bool
-	runtimePodRepo        repository.RuntimePodRepository
-	bindingRepo           repository.InstanceRuntimeBindingRepository
-	agentClient           RuntimeAgentClient
-	runtimeUpgradeGuard   RuntimeUpgradeDeletionGuard
-	resourceCleanup       func(context.Context, int) error
-	workspaceRoot         string
-	podService            *k8s.PodService
-	deploymentService     *k8s.InstanceDeploymentService
-	pvcService            *k8s.PVCService
-	serviceService        *k8s.ServiceService
-	networkPolicyService  *k8s.NetworkPolicyService
-	secretService         *k8s.SecretService
-	deletionMu            sync.Mutex
-	deletionsInFlight     map[int]struct{}
+	ownerTeamMutationGuard func(instanceID int, action string, teamID int) error
+	instanceRepo           repository.InstanceRepository
+	quotaRepo              repository.QuotaRepository
+	llmModelRepo           repository.LLMModelRepository
+	gatewayKeyRepo         repository.GatewayKeyRepository
+	expandedModelCatalog   ExpandedLLMModelCatalog
+	openClawConfigService  OpenClawConfigService
+	allowPrivilegedPods    bool
+	runtimePodRepo         repository.RuntimePodRepository
+	bindingRepo            repository.InstanceRuntimeBindingRepository
+	agentClient            RuntimeAgentClient
+	runtimeUpgradeGuard    RuntimeUpgradeDeletionGuard
+	resourceCleanup        func(context.Context, int) error
+	workspaceRoot          string
+	podService             *k8s.PodService
+	deploymentService      *k8s.InstanceDeploymentService
+	pvcService             *k8s.PVCService
+	serviceService         *k8s.ServiceService
+	networkPolicyService   *k8s.NetworkPolicyService
+	secretService          *k8s.SecretService
+	deletionMu             sync.Mutex
+	deletionsInFlight      map[int]struct{}
 }
 
 const (
@@ -1056,6 +1058,17 @@ func (s *instanceService) createV2Instance(ctx context.Context, userID int, req 
 }
 
 // GetByID gets an instance by ID
+// GetByProvisioningOperationID reconciles a lost create response without
+// creating another instance. The caller still verifies owner and parent Team.
+func (s *instanceService) GetByProvisioningOperationID(id string) (*models.Instance, error) {
+	if repo, ok := s.instanceRepo.(interface {
+		GetByProvisioningOperationID(string) (*models.Instance, error)
+	}); ok {
+		return repo.GetByProvisioningOperationID(id)
+	}
+	return nil, fmt.Errorf("provisioning lookup unavailable")
+}
+
 func (s *instanceService) GetByID(id int) (*models.Instance, error) {
 	instance, err := s.instanceRepo.GetByID(id)
 	if err != nil {
@@ -2524,6 +2537,11 @@ func factoryResetString(value string) *string { return &value }
 // workspace contents, runtime-local configuration, tokens and snapshots are
 // never copied from the source.
 func (s *instanceService) CreateResetReplacement(sourceInstanceID int, operationID string) (*models.Instance, error) {
+	if s.ownerTeamMutationGuard != nil {
+		if err := s.ownerTeamMutationGuard(sourceInstanceID, "reset", 0); err != nil {
+			return nil, err
+		}
+	}
 	source, err := s.GetByID(sourceInstanceID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load factory-reset source: %w", err)
@@ -2594,6 +2612,11 @@ func resetReplacementCreateRequest(source *models.Instance, operationID string) 
 // legacy UI Delete method it never reports success after merely scheduling a
 // best-effort background cleanup.
 func (s *instanceService) DeletePermanently(instanceID int) error {
+	if s.ownerTeamMutationGuard != nil {
+		if err := s.ownerTeamMutationGuard(instanceID, "delete", 0); err != nil {
+			return err
+		}
+	}
 	instance, err := s.instanceRepo.GetByID(instanceID)
 	if err != nil {
 		return fmt.Errorf("failed to get instance for permanent deletion: %w", err)
@@ -2796,6 +2819,11 @@ type InstanceLifecycleFailureService interface {
 // workspace and clears instance-local runtime state. Callers must obtain an
 // explicit data-loss confirmation before invoking this service.
 func (s *instanceService) Reset(instanceID int) error {
+	if s.ownerTeamMutationGuard != nil {
+		if err := s.ownerTeamMutationGuard(instanceID, "reset", 0); err != nil {
+			return err
+		}
+	}
 	ctx := context.Background()
 	instance, err := s.instanceRepo.GetByID(instanceID)
 	if err != nil {
@@ -3141,6 +3169,21 @@ func (s *instanceService) restartInstanceWithEnvironment(instanceID int, environ
 
 // Delete starts deleting an instance and all associated K8s resources.
 func (s *instanceService) Delete(instanceID int) error {
+	return s.deleteForTeam(instanceID, 0)
+}
+
+func (s *instanceService) SetOwnerTeamMutationGuard(guard func(int, string, int) error) {
+	s.ownerTeamMutationGuard = guard
+}
+func (s *instanceService) DeleteForOwnerTeam(teamID, instanceID int) error {
+	return s.deleteForTeam(instanceID, teamID)
+}
+func (s *instanceService) deleteForTeam(instanceID, teamID int) error {
+	if s.ownerTeamMutationGuard != nil {
+		if err := s.ownerTeamMutationGuard(instanceID, "delete", teamID); err != nil {
+			return err
+		}
+	}
 	release, err := s.acquireLifecycleOperation(instanceID)
 	if err != nil {
 		return err
@@ -3288,12 +3331,17 @@ func (s *instanceService) ValidateDelete(instanceID int) error {
 
 func (s *instanceService) completeDeletion(userID, instanceID int) {
 	ctx := context.Background()
+	release, gateErr := backupgate.HoldWorkUnit(ctx, "instance.delete")
+	if gateErr != nil {
+		return
+	}
+	defer release()
 	// The API returns before this worker runs. Reacquire the lifecycle guard.
 	deadline := time.Now().Add(30 * time.Second)
-	var release func()
+	var lifecycleRelease func()
 	for {
 		var err error
-		release, err = s.acquireLifecycleOperation(instanceID)
+		lifecycleRelease, err = s.acquireLifecycleOperation(instanceID)
 		if err == nil {
 			break
 		}
@@ -3303,7 +3351,7 @@ func (s *instanceService) completeDeletion(userID, instanceID int) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	defer release()
+	defer lifecycleRelease()
 	instance, err := s.instanceRepo.GetByID(instanceID)
 	if err != nil || instance == nil || instance.UserID != userID || instance.Status != "deleting" {
 		return

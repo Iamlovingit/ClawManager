@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"clawreef/internal/backupgate"
 	"clawreef/internal/heartbeat"
 	"clawreef/internal/models"
 	"clawreef/internal/repository"
@@ -269,8 +270,32 @@ func (s *RuntimeScheduler) StartRollout(ctx context.Context, rolloutID int64) er
 	if rollout.Status != "pending" {
 		return nil
 	}
+	if rollout.RuntimeType == RuntimeTypeOpenClaw && rollout.PreflightID == nil {
+		active, err := s.rolloutRepo.ListActive(ctx, rollout.RuntimeType)
+		if err != nil {
+			return err
+		}
+		for _, other := range active {
+			if other.ID != rollout.ID && (other.Status == "running" || other.ID < rollout.ID) {
+				return nil
+			}
+		}
+	}
+	if isEmptyOpenClawPoolReset(rollout) {
+		if err := s.startOpenClawPoolReplacement(ctx, rollout); err != nil {
+			now, message := time.Now().UTC(), err.Error()
+			_ = s.rolloutRepo.UpdateStatus(ctx, rollout.ID, "error", nil, &now, &message)
+			return err
+		}
+		return nil
+	}
 	if handled, err := s.startPoolRollout(ctx, rollout); handled {
 		return err
+	}
+	if rollout.RuntimeType == RuntimeTypeOpenClaw && rollout.PreflightID == nil {
+		if _, ok := s.deployments.(k8s.RuntimePoolValidationService); ok {
+			return s.startOrdinaryOpenClawValidation(ctx, rollout)
+		}
 	}
 	if rollout.RuntimeType == RuntimeTypeOpenClaw && rollout.PreflightID != nil {
 		if s.upgrade == nil {
@@ -282,6 +307,10 @@ func (s *RuntimeScheduler) StartRollout(ctx context.Context, rolloutID int64) er
 			return err
 		}
 	}
+	return s.startRuntimeRolloutWork(ctx, rollout)
+}
+
+func (s *RuntimeScheduler) startRuntimeRolloutWork(ctx context.Context, rollout *models.RuntimeRollout) error {
 	emptyOpenClawPoolReset := isEmptyOpenClawPoolReset(rollout)
 	if emptyOpenClawPoolReset {
 		if s.upgrade == nil {
@@ -295,6 +324,9 @@ func (s *RuntimeScheduler) StartRollout(ctx context.Context, rolloutID int64) er
 	}
 
 	startedAt := time.Now().UTC()
+	if rollout.StartedAt != nil {
+		startedAt = *rollout.StartedAt
+	}
 	if err := s.rolloutRepo.UpdateStatus(ctx, rollout.ID, "running", &startedAt, nil, nil); err != nil {
 		return err
 	}
@@ -322,6 +354,29 @@ func (s *RuntimeScheduler) StartRollout(ctx context.Context, rolloutID int64) er
 		return inventoryErr
 	}
 	allPods = annotateRuntimePods(allPods, deploymentInventory)
+	if rollout.RuntimeType == RuntimeTypeOpenClaw && rollout.PreflightID == nil && rollout.SourceImagesJSON == nil {
+		if store, ok := s.rolloutRepo.(interface {
+			SaveOrdinarySourceImages(context.Context, int64, string) error
+		}); ok {
+			sources := map[string]string{}
+			for _, pod := range filterOrdinaryRuntimePods(deploymentInventory) {
+				if pod.Namespace == s.runtimeNamespace && pod.DeploymentName != "" && pod.ImageRef != "" {
+					sources[pod.Namespace+"/"+pod.DeploymentName] = pod.ImageRef
+				}
+			}
+			if len(sources) == 0 {
+				return fmt.Errorf("%w: cannot freeze ordinary rollout deployment scope", errRuntimeControlPlanePending)
+			}
+			raw, err := json.Marshal(sources)
+			if err != nil {
+				return err
+			}
+			if err := store.SaveOrdinarySourceImages(ctx, rollout.ID, string(raw)); err != nil {
+				return err
+			}
+			rollout.SourceImagesJSON = stringPtrOrNil(string(raw))
+		}
+	}
 	if rollout.RuntimeType != RuntimeTypeOpenClaw || rollout.PreflightID == nil {
 		allPods = filterOrdinaryRuntimePods(allPods)
 	}
@@ -334,6 +389,13 @@ func (s *RuntimeScheduler) StartRollout(ctx context.Context, rolloutID int64) er
 				return err
 			}
 			alreadyAtImage = reason == ""
+			if alreadyAtImage && rollout.RuntimeType == RuntimeTypeOpenClaw && rollout.PreflightID == nil {
+				reason, err = s.emptyPoolPlacementCompletionReason(ctx, *rollout)
+				if err != nil {
+					return err
+				}
+				alreadyAtImage = reason == ""
+			}
 		}
 	}
 	if alreadyAtImage {
@@ -850,6 +912,15 @@ func (s *RuntimeScheduler) finishRolloutIfReady(ctx context.Context, rollout mod
 	if s == nil || s.podRepo == nil || s.rolloutRepo == nil {
 		return nil
 	}
+	if rollout.RuntimeType == RuntimeTypeOpenClaw && rollout.PreflightID == nil {
+		if _, ok := s.rolloutRepo.(rolloutCheckpointStore); ok {
+			if p, err := s.loadPoolReplacement(ctx, rollout.ID); err != nil {
+				return err
+			} else if p != nil {
+				return s.advanceOpenClawPoolReplacement(ctx, rollout, p)
+			}
+		}
+	}
 	if rollout.RuntimeType != RuntimeTypeOpenClaw {
 		p, err := LoadRuntimePoolProgress(ctx, s.rolloutRepo, rollout.ID)
 		if err != nil {
@@ -1333,6 +1404,11 @@ func runtimePodsAlreadyAtImage(pods []models.RuntimePod, runtimeType, targetImag
 }
 
 func (s *RuntimeScheduler) reconcileIfLeader(ctx context.Context) {
+	release, gateErr := backupgate.HoldWorkUnit(ctx, "runtime.scheduler")
+	if gateErr != nil {
+		return
+	}
+	defer release()
 	if s.leader != nil && !s.leader.IsLeader(ctx) {
 		return
 	}
@@ -1849,7 +1925,7 @@ func (s *RuntimeScheduler) assignInstance(ctx context.Context, instance models.I
 		}
 		return err
 	}
-	pods, err = s.annotateAndFilterOrdinaryRuntimePods(ctx, runtimeType, pods)
+	pods, err = s.verifiedOrdinaryRuntimePods(ctx, runtimeType, pods)
 	if err != nil {
 		if runtimeUpgradeInfrastructureRetryable(err) {
 			return fmt.Errorf("%w: classify schedulable runtime pods: %v", errRuntimeControlPlanePending, err)
@@ -1857,9 +1933,13 @@ func (s *RuntimeScheduler) assignInstance(ctx context.Context, instance models.I
 		return fmt.Errorf("classify schedulable %s runtime pods: %w", runtimeType, err)
 	}
 	if runtimeType == RuntimeTypeOpenClaw && s.upgrade != nil {
+		verifiedCount := len(pods)
 		pods, err = s.upgrade.filterUpgradePlacement(ctx, instance.ID, pods)
 		if err != nil {
 			return err
+		}
+		if verifiedCount > 0 && len(pods) == 0 {
+			return fmt.Errorf("%w: no verified Runtime matches this instance's committed upgrade placement (healthy candidates=%d)", errRuntimeControlPlanePending, verifiedCount)
 		}
 	}
 	if len(pods) == 0 {
@@ -1891,7 +1971,7 @@ func (s *RuntimeScheduler) assignInstance(ctx context.Context, instance models.I
 			lastErr = fmt.Errorf("runtime pod %d has gateway start in flight: %w", pod.ID, errRuntimeGatewayStartPending)
 			continue
 		}
-		claimed, err := s.podRepo.TryClaimSlot(ctx, pod.ID)
+		claimed, err := s.claimRuntimeSlot(ctx, pod.ID)
 		if err != nil {
 			unlock()
 			lastErr = err
@@ -1926,6 +2006,9 @@ func (s *RuntimeScheduler) assignInstance(ctx context.Context, instance models.I
 		return nil
 	}
 	if lastErr != nil {
+		if isRuntimeAssignmentPending(lastErr) {
+			return lastErr
+		}
 		if runtimeFailureCode(lastErr) == "PROXY_POLICY_NOT_READY" {
 			return lastErr
 		}
@@ -2215,6 +2298,11 @@ func (s *RuntimeScheduler) prepareGatewayStartOwned(ctx context.Context, instanc
 	if s.agentClient == nil || s.bindingRepo == nil || s.instanceRepo == nil {
 		return nil, fmt.Errorf("runtime scheduler gateway dependencies are not configured")
 	}
+	if rollout == nil {
+		if err := s.verifyOrdinaryRuntimePod(ctx, pod); err != nil {
+			return nil, err
+		}
+	}
 	// Shared by ordinary creation, restart and upgrade recovery. Publish before
 	// writing a workspace, reserving ports, or starting any Gateway process.
 	if runtimeType == RuntimeTypeOpenClaw || runtimeType == RuntimeTypeHermes {
@@ -2276,6 +2364,13 @@ func (s *RuntimeScheduler) prepareGatewayStartOwned(ctx context.Context, instanc
 func (s *RuntimeScheduler) createGatewayOnPod(ctx context.Context, instance models.Instance, runtimeType string, pod models.RuntimePod, start *runtimeGatewayStart) error {
 	if start == nil || start.reservedBinding == nil {
 		return fmt.Errorf("runtime gateway start is not prepared")
+	}
+	if start.upgradeID == "" {
+		if err := s.verifyOrdinaryRuntimePod(ctx, pod); err != nil {
+			// A reservation exists: preserve it for authoritative reconciliation,
+			// never try another Pod after an uncertain start boundary.
+			return s.preservePendingGatewayStart(ctx, instance.ID, instance.RuntimeGeneration, err)
+		}
 	}
 	resp, err := s.agentClient.CreateGateway(ctx, start.endpoint, RuntimeAgentCreateGatewayRequest{
 		InstanceID:          instance.ID,

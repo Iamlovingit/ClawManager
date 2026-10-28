@@ -16,6 +16,8 @@ backend/.cache
 backend/.codex
 backend/.tmp
 .tmp
+team-optimization-docs
+reports
 dev_docs
 docs
 scripts

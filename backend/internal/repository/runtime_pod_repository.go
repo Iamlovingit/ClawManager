@@ -153,13 +153,26 @@ func (r *runtimePodRepository) ListSchedulable(ctx context.Context, runtimeType 
 }
 
 func (r *runtimePodRepository) TryClaimSlot(ctx context.Context, podID int64) (bool, error) {
-	res, err := r.sess.SQL().ExecContext(ctx, `
-		UPDATE runtime_pods
-		SET used_slots = used_slots + 1, updated_at = ?
-		WHERE id = ? AND state = 'ready' AND draining = 0 AND used_slots < capacity
-		AND NOT EXISTS (SELECT 1 FROM runtime_rollouts rr
-		  WHERE rr.runtime_type = runtime_pods.runtime_type AND rr.status IN ('pending','running'))
-	`, time.Now().UTC(), podID)
+	return r.tryClaimSlot(ctx, podID, nil)
+}
+
+// The scheduler supplies its configured freshness window. Recheck atomically
+// with capacity acquisition, rather than trusting an earlier SELECT snapshot.
+func (r *runtimePodRepository) TryClaimSlotSince(ctx context.Context, podID int64, cutoff time.Time) (bool, error) {
+	return r.tryClaimSlot(ctx, podID, &cutoff)
+}
+
+func (r *runtimePodRepository) tryClaimSlot(ctx context.Context, podID int64, cutoff *time.Time) (bool, error) {
+	query := `
+		UPDATE runtime_pods SET used_slots=used_slots+1,updated_at=?
+		WHERE id=? AND state='ready' AND draining=0 AND used_slots<capacity
+		AND NOT EXISTS (SELECT 1 FROM runtime_rollouts rr WHERE rr.runtime_type=runtime_pods.runtime_type AND rr.status IN('pending','running'))`
+	args := []any{time.Now().UTC(), podID}
+	if cutoff != nil {
+		query += ` AND last_seen_at IS NOT NULL AND last_seen_at>=?`
+		args = append(args, *cutoff)
+	}
+	res, err := r.sess.SQL().ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, fmt.Errorf("failed to claim runtime pod slot: %w", err)
 	}

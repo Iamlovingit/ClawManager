@@ -123,6 +123,7 @@ export interface RuntimeUpgradeItem {
 }
 
 export interface RuntimeUpgradeDetails {
+  pool_operation?: {stage:string;message:string;validated:number;completed:number;total:number;restored:boolean} | null;
   execution?: { version: number; check: number; migrate: number; start: number; restore: number };
   pool_progress?: {
     version: number;

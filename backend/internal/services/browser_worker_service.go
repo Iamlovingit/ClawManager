@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"clawreef/internal/backupgate"
 	"clawreef/internal/models"
 	"clawreef/internal/repository"
 	cmk8s "clawreef/internal/services/k8s"
@@ -289,6 +290,11 @@ func (s *BrowserWorkerService) Run(ctx context.Context, interval time.Duration) 
 		interval = 30 * time.Second
 	}
 	reconcile := func() {
+		release, gateErr := backupgate.HoldWorkUnit(ctx, "browser.reconcile")
+		if gateErr != nil {
+			return
+		}
+		defer release()
 		round, cancel := context.WithTimeout(ctx, interval)
 		defer cancel()
 		s.ReconcileAll(round)

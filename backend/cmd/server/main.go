@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"clawreef/internal/aigateway"
+	"clawreef/internal/backupgate"
 	"clawreef/internal/buildinfo"
 	"clawreef/internal/config"
 	"clawreef/internal/db"
@@ -24,6 +26,7 @@ import (
 	"clawreef/internal/services"
 	"clawreef/internal/services/k8s"
 	"clawreef/internal/services/leader"
+	"clawreef/internal/systembackup"
 	"clawreef/internal/teamtemplate"
 
 	"github.com/gin-gonic/gin"
@@ -266,6 +269,15 @@ func main() {
 	runtimeMaintenanceHandler := handlers.NewRuntimeMaintenanceHandler(repository.NewRuntimeMaintenanceRepository(database), instanceRepo)
 	runtimeProtocolPolicy := middleware.RuntimeProtocolPolicy(runtimeProtocols)
 	customTeamTemplateService := teamtemplate.NewService(customTeamTemplateRepo, aiGatewayService)
+	ownerTeamAPI := northbound.NewOwnerTeamAPI(database, teamService, instanceService, userRepo, aiGatewayService, false, 0)
+	ownerTeamAPI.Settings = northboundRuntimeSettings
+	ownerTeamAPI.Audit = auditEventRepo
+	if guarded, ok := instanceService.(interface {
+		SetOwnerTeamMutationGuard(func(int, string, int) error)
+	}); ok {
+		guarded.SetOwnerTeamMutationGuard(ownerTeamAPI.GuardInstanceMutation)
+	}
+	northboundCoreService.OwnerTeams = ownerTeamAPI
 
 	// Initialize handlers
 	versionHandler := handlers.NewVersionHandler()
@@ -302,10 +314,12 @@ func main() {
 		log.Fatalf("Failed to initialize IEI system SSO: %v", err)
 	}
 	instanceHandler.SetIEISSOService(ieiSSOService)
+	ieiSSOService.SetSessionRevocationStore(repository.NewOwnerTeamRepository(database))
 	instanceHandler.SetHermesDesktopService(hermesDesktopService)
 	ieiSystemHandler := handlers.NewIEISystemHandler(cfg.IEISystem, ieiSSOService, instanceService, instanceHandler)
 	ieiSystemHandler.SetHermesDesktopService(hermesDesktopService)
 	ieiSystemHandler.SetOwnerDashboard(ownerStore)
+	ieiSystemHandler.SetOwnerTeamAPI(ownerTeamAPI)
 	if northboundCoreService != nil {
 		northboundCoreService.SetOwnerUsage(ownerStore)
 	}
@@ -446,6 +460,31 @@ func main() {
 	workbuddyPrewarmController := k8s.NewWorkbuddyPrewarmController()
 
 	leaderCtx, leaderCancel := context.WithCancel(context.Background())
+	var backupHTTPPool *sql.DB
+	if db.SQLGateScope() != "" {
+		openCtx, openCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		var openErr error
+		backupHTTPPool, openErr = systembackup.OpenControlDatabase(openCtx, os.Getenv("SYSTEM_BACKUP_CONTROL_DSN_FILE"))
+		if openErr == nil {
+			businessSQL, _ := database.Driver().(*sql.DB)
+			openErr = backupgate.RequireSameDatabase(openCtx, businessSQL, backupHTTPPool)
+		}
+		openCancel()
+		if openErr != nil {
+			log.Fatal("backup HTTP boundary requires an available independent control credential")
+		}
+		// Do not consume the business SQL pool while a handler is awaiting I/O.
+		backupHTTPPool.SetMaxOpenConns(64)
+		defer backupHTTPPool.Close()
+		restoreBoundary := backupgate.ConfigureWorkBoundary(func(ctx context.Context) (func(), error) {
+			return backupgate.HoldRequest(ctx, backupHTTPPool, db.SQLGateScope())
+		})
+		defer restoreBoundary()
+		go (systembackup.Gate{DB: backupHTTPPool}).RunExpiryWatchdog(leaderCtx, db.SQLGateScope())
+		if northboundCoreServer != nil {
+			northboundCoreServer.Handler = backupgate.HTTPBoundary(northboundCoreServer.Handler, "northbound.core_http")
+		}
+	}
 	defer leaderCancel()
 	go ownerStore.RunBuffered(leaderCtx)
 	go db.RetryOwnerAnalytics(leaderCtx, database)
@@ -513,6 +552,7 @@ func main() {
 	// Setup router
 	r := gin.New()
 	r.Use(handlers.HermesDesktopRedactTickets(), gin.Logger(), gin.Recovery())
+	r.Use(middleware.BackupRequestBoundary(backupHTTPPool, db.SQLGateScope()))
 
 	// Middleware
 	r.Use(middleware.CORS())
@@ -531,6 +571,7 @@ func main() {
 		api.GET("/version", versionHandler.Get)
 
 		ieiSystem := api.Group("/ieisystem")
+		ieiSystemHandler.RegisterOwnerTeamRoutes(ieiSystem)
 		{
 			ieiSystem.POST("/session", ieiSystemHandler.ExchangeSession)
 			ieiSystem.GET("/session", ieiSystemHandler.GetSession)
@@ -740,6 +781,7 @@ func main() {
 		teams := api.Group("/teams")
 		teams.Use(middleware.Auth())
 		teams.Use(middleware.SetUserInfo(userRepo))
+		teams.Use(teamHandler.ResourceScopeGuard)
 		{
 			teams.GET("", teamHandler.ListTeams)
 			teams.POST("", teamHandler.CreateTeam)
@@ -869,6 +911,59 @@ func main() {
 			adminSystemSettings.PUT("/routing-classifier/mode", routingClassifierHandler.SetMode)
 			adminSystemSettings.POST("/routing-classifier/compare", routingClassifierHandler.Compare)
 		}
+
+		backupBindings, backupBindingErr := systembackup.ParseRoleBindings(os.Getenv("SYSTEM_BACKUP_ROLE_BINDINGS"))
+		if backupBindingErr != nil {
+			log.Println("System backup role bootstrap is invalid; access disabled")
+			backupBindings = nil
+		}
+		backupSQL, _ := database.Driver().(*sql.DB)
+		if controlFile := strings.TrimSpace(os.Getenv("SYSTEM_BACKUP_CONTROL_DSN_FILE")); controlFile != "" {
+			controlContext, controlCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			controlSQL, controlErr := systembackup.OpenControlDatabase(controlContext, controlFile)
+			if controlErr == nil && db.SQLGateScope() != "" {
+				controlErr = backupgate.RequireSameDatabase(controlContext, backupSQL, controlSQL)
+			}
+			controlCancel()
+			if controlErr != nil {
+				if controlSQL != nil {
+					controlSQL.Close()
+				}
+				log.Println("System backup control database unavailable; access disabled")
+				backupSQL = nil
+			} else {
+				backupSQL = controlSQL
+				defer controlSQL.Close()
+			}
+		} else if db.SQLGateScope() != "" {
+			log.Println("System backup SQL gate requires a separate control credential; backup access disabled")
+			backupSQL = nil
+		}
+		backupStore := systembackup.Store{DB: backupSQL, InstallationID: strings.TrimSpace(os.Getenv("SYSTEM_BACKUP_INSTALLATION_ID"))}
+		backupHandler := handlers.NewSystemBackupHandler(backupStore, backupBindings)
+		backupMFA, backupMFAErr := systembackup.LoadStrongAuthVerifier(strings.TrimSpace(os.Getenv("SYSTEM_BACKUP_STRONG_AUTH_FILE")))
+		if backupMFAErr != nil || backupMFA != nil && backupMFA.Audience != backupStore.InstallationID {
+			log.Println("System backup MFA bootstrap is invalid; sensitive configuration changes disabled")
+		} else {
+			backupHandler.SetStrongAuthVerifier(backupMFA)
+		}
+		backupAdmin := api.Group("/admin/system-backup")
+		backupAdmin.Use(middleware.Auth(), middleware.SetUserInfo(userRepo), middleware.NewAdminAuth(userRepo))
+		backupHandler.Register(backupAdmin)
+		var teamDataBackup *systembackup.TeamDataService
+		if path := strings.TrimSpace(os.Getenv("SYSTEM_TEAM_DATA_BACKUP_CONFIG")); path != "" {
+			setupCtx, setupCancel := context.WithTimeout(leaderCtx, 20*time.Second)
+			sourceSQL, _ := database.Driver().(*sql.DB)
+			teamDataBackup, err = systembackup.NewTeamDataService(setupCtx, sourceSQL, path)
+			setupCancel()
+			if err != nil {
+				log.Printf("Team data backup unavailable: %s", systembackup.PublicError(err))
+			} else {
+				defer teamDataBackup.Close()
+				go teamDataBackup.Run(leaderCtx)
+			}
+		}
+		handlers.NewTeamDataBackupHandler(teamDataBackup).Register(backupAdmin)
 
 		northboundSettings := api.Group("/admin/northbound")
 		northboundSettings.Use(middleware.Auth())

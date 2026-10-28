@@ -1,6 +1,17 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+)
+
+const (
+	TeamScopeCM         = "cm"
+	TeamScopeNorthbound = "northbound"
+)
 
 const (
 	TeamStatusCreating = "creating"
@@ -34,6 +45,9 @@ const (
 )
 
 type Team struct {
+	ResourceScope       string    `db:"resource_scope" json:"resource_scope"`
+	Owner               *string   `db:"owner" json:"-"`
+	DisplayName         *string   `db:"display_name" json:"-"`
 	ID                  int       `db:"id,primarykey,autoincrement" json:"id"`
 	UserID              int       `db:"user_id" json:"user_id"`
 	Name                string    `db:"name" json:"name"`
@@ -51,6 +65,44 @@ type Team struct {
 	StorageClass        *string   `db:"storage_class" json:"storage_class,omitempty"`
 	CreatedAt           time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt           time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// Empty scope is tolerated only for legacy in-memory callers. Persisted rows
+// receive the cm database default. Unknown/corrupt scopes never become CM.
+func (t Team) IsCM() bool { return t.ResourceScope == "" || t.ResourceScope == TeamScopeCM }
+
+func (t Team) ValidateScope() error {
+	if t.IsCM() {
+		if t.Owner != nil {
+			return fmt.Errorf("CM Team must not have an owner")
+		}
+		return nil
+	}
+	if t.ResourceScope != TeamScopeNorthbound || t.Owner == nil {
+		return fmt.Errorf("invalid Team resource ownership")
+	}
+	_, err := NormalizeTeamOwner(*t.Owner)
+	return err
+}
+
+func NormalizeTeamOwner(raw string) (string, error) {
+	owner := strings.ToLower(strings.TrimSpace(raw))
+	if owner == "" || len(owner) > 128 || !utf8.ValidString(owner) {
+		return "", fmt.Errorf("owner must contain 1 to 128 UTF-8 bytes")
+	}
+	for _, c := range owner {
+		if unicode.IsControl(c) {
+			return "", fmt.Errorf("owner must not contain control characters")
+		}
+	}
+	return owner, nil
+}
+
+func (t Team) VisibleName() string {
+	if t.ResourceScope == TeamScopeNorthbound && t.DisplayName != nil && strings.TrimSpace(*t.DisplayName) != "" {
+		return *t.DisplayName
+	}
+	return t.Name
 }
 
 func (Team) TableName() string {
@@ -81,6 +133,8 @@ type TeamMember struct {
 	LastSummary   *string    `db:"last_summary" json:"last_summary,omitempty"`
 	CreatedAt     time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt     time.Time  `db:"updated_at" json:"updated_at"`
+	// A read-only observation, never a task heartbeat or persisted member state.
+	RuntimeObservation *TeamMemberRuntimeObservation `db:"-" json:"runtime_observation,omitempty"`
 }
 
 func (TeamMember) TableName() string {

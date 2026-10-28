@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
+  Archive,
   ArrowLeft,
   Bot,
   ChevronDown,
@@ -54,6 +55,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children, title = '' }) => {
 
   const navItems: NavItem[] = [
     { path: '/admin', label: t('nav.adminDashboard'), icon: Home, exact: true },
+    { path: '/admin/backups', label: t('nav.backups'), icon: Archive },
     { path: '/admin/users', label: t('nav.users'), icon: Users },
     { path: '/admin/instances', label: t('nav.instances'), icon: Monitor },
     { path: '/admin/runtime-pods', label: t('nav.runtime'), icon: Server },

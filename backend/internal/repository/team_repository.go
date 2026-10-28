@@ -76,6 +76,12 @@ func NewTeamRepository(sess db.Session) TeamRepository {
 }
 
 func (r *teamRepository) CreateTeam(team *models.Team) error {
+	if team.ResourceScope == "" {
+		team.ResourceScope = models.TeamScopeCM
+	}
+	if err := team.ValidateScope(); err != nil {
+		return err
+	}
 	ensureTimestamps(&team.CreatedAt, &team.UpdatedAt)
 	res, err := r.sess.Collection("teams").Insert(team)
 	if err != nil {
@@ -135,7 +141,7 @@ func (r *teamRepository) ListTeamsByUserID(userID int, offset, limit int) ([]mod
 		limit = 20
 	}
 	var teams []models.Team
-	if err := r.sess.Collection("teams").Find(db.Cond{"user_id": userID}).OrderBy("-created_at", "-id").Offset(offset).Limit(limit).All(&teams); err != nil {
+	if err := r.sess.Collection("teams").Find(db.Cond{"user_id": userID, "resource_scope": models.TeamScopeCM}).OrderBy("-created_at", "-id").Offset(offset).Limit(limit).All(&teams); err != nil {
 		return nil, fmt.Errorf("failed to list teams: %w", err)
 	}
 	return teams, nil
@@ -162,7 +168,7 @@ func (r *teamRepository) ListTeamsByStatus(status string) ([]models.Team, error)
 }
 
 func (r *teamRepository) CountTeamsByUserID(userID int) (int, error) {
-	count, err := r.sess.Collection("teams").Find(db.Cond{"user_id": userID}).Count()
+	count, err := r.sess.Collection("teams").Find(db.Cond{"user_id": userID, "resource_scope": models.TeamScopeCM}).Count()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count teams: %w", err)
 	}

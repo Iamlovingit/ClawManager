@@ -49,7 +49,7 @@ func upgradeFlowDB(t *testing.T) db.Session {
 			t.Fatalf("%v: %s", e, q)
 		}
 	}
-	exec(`CREATE TABLE instances (id INT PRIMARY KEY,user_id INT,type VARCHAR(32),runtime_type VARCHAR(32),instance_mode VARCHAR(32),status VARCHAR(32),runtime_generation INT,workspace_path VARCHAR(1024),runtime_error_message TEXT NULL,runtime_error_code VARCHAR(64) NULL,updated_at DATETIME(6))`)
+	exec(`CREATE TABLE instances (id INT PRIMARY KEY,user_id INT,type VARCHAR(32),runtime_type VARCHAR(32),instance_mode VARCHAR(32),status VARCHAR(32),runtime_generation INT,workspace_path VARCHAR(1024),runtime_error_message TEXT NULL,runtime_error_code VARCHAR(64) NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6))`)
 	for _, n := range []string{"users", "teams", "team_members"} {
 		exec("CREATE TABLE " + n + " (id INT PRIMARY KEY)")
 	}
@@ -125,7 +125,7 @@ func TestUpgradeRecoveryMySQLFlow(t *testing.T) {
 				if id == 484 {
 					state, status, gen = "migrated", "stopped", 1
 				}
-				exec("INSERT INTO instances VALUES (?,1,'openclaw','gateway','lite',?,?,?,NULL,NULL,NOW())", id, status, gen, RuntimeWorkspacePathWithRoot(root, "openclaw", 1, id))
+				exec("INSERT INTO instances(id,user_id,type,runtime_type,instance_mode,status,runtime_generation,workspace_path,runtime_error_message,runtime_error_code,updated_at) VALUES (?,1,'openclaw','gateway','lite',?,?,?,NULL,NULL,NOW())", id, status, gen, RuntimeWorkspacePathWithRoot(root, "openclaw", 1, id))
 				exec(`INSERT INTO runtime_upgrade_items (rollout_id,instance_id,state,source_generation,snapshot_ref,postflight_json,created_at,updated_at) VALUES (123,?,?,1,'capsule','{}',NOW(),NOW()-INTERVAL 2 HOUR)`, id, state)
 			}
 			pods := repository.NewRuntimePodRepository(s)

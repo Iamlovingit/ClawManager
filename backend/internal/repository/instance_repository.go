@@ -529,6 +529,7 @@ func (r *instanceRepository) CountWorkbuddyProByUserIDAndOwner(userID int, owner
 
 func supportedNorthboundProOwnerInstances(userID int, owner string) db.LogicalExpr {
 	return db.And(
+		db.Raw("NOT EXISTS (SELECT 1 FROM team_members otm JOIN teams ott ON ott.id=otm.team_id WHERE (otm.instance_id=instances.id OR instances.provisioning_operation_id=SHA2(CONCAT('owner-team-',ott.id,'-member-',otm.member_key),256)) AND otm.status<>'deleted' AND ott.resource_scope='northbound' AND ott.status<>'deleted')"),
 		db.Cond{"user_id": userID, "owner": owner, "instance_mode": "pro"},
 		db.Or(
 			db.Cond{"type IN": []string{"openclaw", "hermes", "opencode", "deepseek-harness"}},
@@ -557,6 +558,7 @@ func (r *instanceRepository) CountProByUserIDAndOwner(userID int, owner string) 
 
 func supportedNorthboundOwnerInstances(userID int, owner string) db.LogicalExpr {
 	return db.And(
+		db.Raw("NOT EXISTS (SELECT 1 FROM team_members otm JOIN teams ott ON ott.id=otm.team_id WHERE (otm.instance_id=instances.id OR instances.provisioning_operation_id=SHA2(CONCAT('owner-team-',ott.id,'-member-',otm.member_key),256)) AND otm.status<>'deleted' AND ott.resource_scope='northbound' AND ott.status<>'deleted')"),
 		db.Cond{"user_id": userID, "owner": owner},
 		db.Or(
 			db.Cond{
@@ -596,6 +598,7 @@ func (r *instanceRepository) CountNorthboundByUserIDAndOwner(userID int, owner s
 
 func supportedIEIOwnerInstances(owner string) db.LogicalExpr {
 	return db.And(
+		db.Raw("NOT EXISTS (SELECT 1 FROM team_members otm JOIN teams ott ON ott.id=otm.team_id WHERE (otm.instance_id=instances.id OR instances.provisioning_operation_id=SHA2(CONCAT('owner-team-',ott.id,'-member-',otm.member_key),256)) AND otm.status<>'deleted' AND ott.resource_scope='northbound' AND ott.status<>'deleted')"),
 		db.Cond{"owner_normalized": strings.ToLower(strings.TrimSpace(owner))},
 		db.Or(
 			db.Cond{
