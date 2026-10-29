@@ -79,13 +79,14 @@ func TestProtectedSchedulerRestoresDurableCreatingBeforeRealSlotRetry(t *testing
 			})}).(*slotRuntimeAgentClient)
 			client.security = a
 			endpoint, uid := "https://"+pod.Status.PodIP+":19090", string(pod.UID)
-			p := models.RuntimePod{ID: 9, RuntimeType: "opencode", AgentEndpoint: &endpoint, PodUID: &uid, Namespace: "test", PodName: pod.Name, State: "ready", Capacity: 2}
+			now := time.Now().UTC()
+			p := models.RuntimePod{ID: 9, RuntimeType: "opencode", AgentEndpoint: &endpoint, PodUID: &uid, PodIP: &pod.Status.PodIP, Namespace: "test", PodName: pod.Name, DeploymentName: "pool", ImageRef: "registry/opencode:test", LastSeenAt: &now, State: "ready", Capacity: 2}
 			pods := &fakeRuntimePodRepo{pods: map[int64]*models.RuntimePod{9: &p}, schedulable: []models.RuntimePod{p}}
 			bindings := newFakeRuntimeBindingRepo()
 			if scenario == "pending-binding" {
 				bindings.bindings[7] = &models.InstanceRuntimeBinding{InstanceID: 7, RuntimePodID: 9, RuntimeType: "opencode", State: RuntimeGatewayBindingCreating, GatewayID: "pending-7-2", Generation: 2, GatewayPort: 20000, WorkspacePath: path}
 			}
-			s := NewRuntimeScheduler(repo, pods, bindings, &fakeRuntimeRolloutRepo{}, client, &fakeRuntimeEventService{}, nil, &fakeRuntimeDeploymentService{pods: []k8s.RuntimeDeploymentPod{{Namespace: "test", PodName: pod.Name, PodUID: uid, RuntimeType: "opencode", State: "ready"}}}, time.Second, WithRuntimeSchedulerGatewayEnvBuilder(func(*models.Instance) (map[string]string, error) { return map[string]string{}, nil }))
+			s := NewRuntimeScheduler(repo, pods, bindings, &fakeRuntimeRolloutRepo{}, client, &fakeRuntimeEventService{}, nil, &fakeRuntimeDeploymentService{pods: []k8s.RuntimeDeploymentPod{{Namespace: "test", PodName: pod.Name, PodUID: uid, PodIP: p.PodIP, DeploymentName: p.DeploymentName, ImageRef: p.ImageRef, RuntimeType: "opencode", State: "ready"}}}, time.Second, WithRuntimeSchedulerGatewayEnvBuilder(func(*models.Instance) (map[string]string, error) { return map[string]string{}, nil }))
 			s.runtimeNamespace = "test"
 			if err := s.reconcile(ctx); err != nil {
 				t.Fatal(err)

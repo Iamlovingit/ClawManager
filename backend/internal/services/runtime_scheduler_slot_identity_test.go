@@ -19,9 +19,10 @@ func TestSlotSchedulerRejectsStaleInventoryBeforeReservation(t *testing.T) {
 	for _, runtimeType := range []string{RuntimeTypeOpenClaw, RuntimeTypeHermes, RuntimeTypeOpenCode, RuntimeTypeDeepSeekHarness} {
 		for _, scenario := range []string{"deleted", "replaced", "not-ready", "missing-uid", "missing-live-uid", "different-name", "different-namespace", "inventory-error", "ready"} {
 			t.Run(runtimeType+"/"+scenario, func(t *testing.T) {
-				endpoint, uid := "https://10.0.0.2:19090", "selected-uid"
-				pod := models.RuntimePod{ID: 9, RuntimeType: runtimeType, Namespace: "clawmanager-system", PodName: "pool-pod", PodUID: &uid, DeploymentName: runtimeType + "-runtime", AgentEndpoint: &endpoint, State: "ready", Capacity: 8}
-				live := k8s.RuntimeDeploymentPod{RuntimeType: runtimeType, Namespace: pod.Namespace, PodName: pod.PodName, PodUID: uid, DeploymentName: pod.DeploymentName, State: "ready"}
+				endpoint, uid, ip := "https://10.0.0.2:19090", "selected-uid", "10.0.0.2"
+				now := time.Now()
+				pod := models.RuntimePod{ID: 9, RuntimeType: runtimeType, Namespace: "clawmanager-system", PodName: "pool-pod", PodUID: &uid, DeploymentName: runtimeType + "-runtime", AgentEndpoint: &endpoint, State: "ready", Capacity: 8, PodIP: &ip, LastSeenAt: &now, ImageRef: "repo/" + runtimeType + ":test"}
+				live := k8s.RuntimeDeploymentPod{RuntimeType: runtimeType, Namespace: pod.Namespace, PodName: pod.PodName, PodUID: uid, DeploymentName: pod.DeploymentName, State: "ready", PodIP: pod.PodIP, ImageRef: pod.ImageRef}
 				deployments := &fakeRuntimeDeploymentService{pods: []k8s.RuntimeDeploymentPod{live}}
 				switch scenario {
 				case "deleted":
@@ -82,5 +83,19 @@ func TestSlotSchedulerRequiresInventoryButLegacyAllowsMissingUID(t *testing.T) {
 	got, err = strict.annotateAndFilterOrdinaryRuntimePods(context.Background(), RuntimeTypeOpenCode, pods)
 	if err == nil || len(got) != 0 {
 		t.Fatalf("strict scheduler accepted unknown inventory: %v %v", got, err)
+	}
+	got, err = strict.verifiedOrdinaryRuntimePods(context.Background(), RuntimeTypeOpenCode, pods)
+	if err == nil || len(got) != 0 {
+		t.Fatalf("strict assignment accepted unknown inventory: %v %v", got, err)
+	}
+	if err := strict.verifyOrdinaryRuntimePod(context.Background(), pods[0]); err == nil {
+		t.Fatal("strict start accepted unknown inventory")
+	}
+	got, err = legacy.verifiedOrdinaryRuntimePods(context.Background(), RuntimeTypeOpenCode, pods)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("legacy assignment changed: %v %v", got, err)
+	}
+	if err := legacy.verifyOrdinaryRuntimePod(context.Background(), pods[0]); err != nil {
+		t.Fatalf("legacy start changed: %v", err)
 	}
 }

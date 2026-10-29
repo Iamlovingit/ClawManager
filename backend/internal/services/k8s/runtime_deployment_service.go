@@ -713,7 +713,7 @@ func (s *runtimeDeploymentService) RolloutImage(ctx context.Context, namespace, 
 	return s.rolloutImage(ctx, namespace, name, image, upgradeID, maxUnavailable, maxSurge, false)
 }
 
-func (s *runtimeDeploymentService) rolloutImage(ctx context.Context, namespace, name, image, upgradeID string, maxUnavailable, maxSurge int, hermesWeb bool) error {
+func (s *runtimeDeploymentService) rolloutImage(ctx context.Context, namespace, name, image, upgradeID string, maxUnavailable, maxSurge int, hermesWeb bool, expectedUID ...string) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("k8s client not initialized")
 	}
@@ -730,6 +730,9 @@ func (s *runtimeDeploymentService) rolloutImage(ctx context.Context, namespace, 
 		}
 
 		updated := existing.DeepCopy()
+		if len(expectedUID) > 0 && string(existing.UID) != expectedUID[0] {
+			return fmt.Errorf("runtime deployment identity changed")
+		}
 		containerIndex := -1
 		for index, container := range updated.Spec.Template.Spec.Containers {
 			if container.Name == "runtime" {

@@ -4,21 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"clawreef/internal/models"
-	"github.com/upper/db/v4"
 )
-
-// GetByIDContext supports bounded capability revalidation without spawning a
-// detached goroutine around the legacy context-free repository method.
-func (r *instanceRepository) GetByIDContext(ctx context.Context, id int) (*models.Instance, error) {
-	var instance models.Instance
-	err := r.sess.WithContext(ctx).Collection("instances").Find(db.Cond{"id": id}).One(&instance)
-	if err != nil {
-		return nil, err
-	}
-	return &instance, nil
-}
 
 // ProtectRuntimeGeneration is monotonic: assignment loss or rollout rollback
 // must not reactivate an old long-lived bearer credential.
@@ -38,7 +24,7 @@ func (r *instanceRepository) ProtectRuntimeGeneration(ctx context.Context, id, g
 	}
 	if rows == 0 {
 		current, readErr := r.GetByIDContext(ctx, id)
-		if readErr != nil || current.RuntimeGeneration != generation || current.Status != "creating" || current.RuntimeSecurityProfile != profile {
+		if readErr != nil || current == nil || current.RuntimeGeneration != generation || current.Status != "creating" || current.RuntimeSecurityProfile != profile {
 			return fmt.Errorf("runtime security transition lost assignment")
 		}
 	}

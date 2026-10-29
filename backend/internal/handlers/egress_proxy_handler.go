@@ -47,12 +47,11 @@ type teamPreviewSecretReader interface {
 }
 
 type egressPrivateExceptionSource interface {
-	SnapshotRules() []egresspolicy.PrivateExceptionRule
+	SnapshotRulesContext(context.Context) []egresspolicy.PrivateExceptionRule
 }
 
 type egressInstanceResolver interface {
-	GetByID(id int) (*models.Instance, error)
-	FindByPodIP(podIP string) (*models.Instance, error)
+	GetByIDContext(context.Context, int) (*models.Instance, error)
 }
 
 // RuntimeCapabilityVerifier verifies a capability against the current assignment.
@@ -81,6 +80,7 @@ type EgressProxyHandler struct {
 	baseDialContext   func(context.Context, string, string) (net.Conn, error)
 	lookupNetIP       egresspolicy.LookupNetIPFunc
 	privateExceptions egressPrivateExceptionSource
+	instances         egressInstanceResolver
 	policy            egresspolicy.Policy
 	audit             services.AuditEventService
 	managedPreview    *services.ManagedTeamPreview
@@ -167,10 +167,11 @@ func WithTeamArtifactPreview(
 }
 
 // WithEgressPrivateExceptions wires private CIDR exception matching.
-// The resolver argument remains for caller compatibility; it never grants identity.
-func WithEgressPrivateExceptions(source egressPrivateExceptionSource, _ egressInstanceResolver) EgressProxyOption {
+// Legacy identity requires derived proxy credentials; source IPs and ID headers never grant it.
+func WithEgressPrivateExceptions(source egressPrivateExceptionSource, instances egressInstanceResolver) EgressProxyOption {
 	return func(handler *EgressProxyHandler) {
 		handler.privateExceptions = source
+		handler.instances = instances
 	}
 }
 
@@ -203,17 +204,15 @@ func (h *EgressProxyHandler) Handle(c *gin.Context) {
 		return
 	}
 
-	if allowed, reason := h.policy.AllowHost(c.Request.URL.Host); !allowed {
-		h.recordBlockedEgress(c, c.Request.URL.Host, reason)
-		c.String(http.StatusForbidden, "egress blocked: %s (%s)", c.Request.URL.Host, reason)
-		return
-	}
-
+	identity := h.resolveEgressIdentity(c)
 	reqCtx, finish := h.authorizedRequest(c, token, verified)
 	defer finish()
+	reqCtx = context.WithValue(reqCtx, egressIdentityContextKey{}, identity)
 	outReq := c.Request.Clone(reqCtx)
 	outReq.RequestURI = ""
 	removeHopHeaders(outReq.Header)
+	outReq.Header.Del("X-ClawManager-Instance-Id")
+	outReq.Header.Del("X-ClawManager-Egress-Instance-Id")
 
 	transport := h.transport
 	if transport == nil {
@@ -225,8 +224,8 @@ func (h *EgressProxyHandler) Handle(c *gin.Context) {
 	}
 	resp, err := transport.RoundTrip(outReq)
 	if err != nil {
-		if errors.Is(err, egresspolicy.ErrUnsafeTarget) {
-			h.recordBlockedEgress(c, c.Request.URL.Host, err.Error())
+		if errors.Is(err, egresspolicy.ErrUnsafeTarget) || errors.Is(err, egresspolicy.ErrHostBlocked) {
+			h.recordBlockedEgress(c, c.Request.URL.Host, err.Error(), identity)
 			c.String(http.StatusForbidden, "egress blocked: %s (%s)", c.Request.URL.Host, err)
 			return
 		}
@@ -252,14 +251,9 @@ func (h *EgressProxyHandler) handleConnect(c *gin.Context) {
 		return
 	}
 
-	if allowed, reason := h.policy.AllowHost(target); !allowed {
-		h.recordBlockedEgress(c, target, reason)
-		c.String(http.StatusForbidden, "egress blocked: %s (%s)", target, reason)
-		return
-	}
-
+	identity := h.resolveEgressIdentity(c)
 	// Hijacking ends the HTTP request context. The tunnel owns its detached lifetime.
-	reqCtx, cancel := h.authorizedContext(context.WithoutCancel(c.Request.Context()), token, verified)
+	reqCtx, cancel := h.authorizedContext(context.WithValue(context.WithoutCancel(c.Request.Context()), egressIdentityContextKey{}, identity), token, verified)
 	handedOff := false
 	defer func() {
 		if !handedOff {
@@ -268,8 +262,8 @@ func (h *EgressProxyHandler) handleConnect(c *gin.Context) {
 	}()
 	upstreamConn, err := h.proxyDialContext(reqCtx, "tcp", target)
 	if err != nil {
-		if errors.Is(err, egresspolicy.ErrUnsafeTarget) {
-			h.recordBlockedEgress(c, target, err.Error())
+		if errors.Is(err, egresspolicy.ErrUnsafeTarget) || errors.Is(err, egresspolicy.ErrHostBlocked) {
+			h.recordBlockedEgress(c, target, err.Error(), identity)
 			c.String(http.StatusForbidden, "egress blocked: %s (%s)", target, err)
 			return
 		}
@@ -298,6 +292,11 @@ func (h *EgressProxyHandler) handleConnect(c *gin.Context) {
 		_ = upstreamConn.Close()
 		return
 	}
+	// Preserve bytes already read during the CONNECT handshake.
+	var clientReader io.Reader = clientConn
+	if buffered != nil {
+		clientReader = buffered.Reader
+	}
 	handedOff = true
 	go func() {
 		defer cancel()
@@ -305,7 +304,7 @@ func (h *EgressProxyHandler) handleConnect(c *gin.Context) {
 		defer clientConn.Close()
 		defer upstreamConn.Close()
 		done := make(chan struct{}, 2)
-		go func() { _, _ = io.Copy(upstreamConn, buffered.Reader); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(upstreamConn, clientReader); done <- struct{}{} }()
 		go func() { _, _ = io.Copy(clientConn, upstreamConn); done <- struct{}{} }()
 		<-done
 		_ = clientConn.Close()
@@ -637,9 +636,14 @@ func (h *EgressProxyHandler) proxyDialContext(ctx context.Context, network, addr
 		id := *identity.UserID
 		identity.UserID = &id
 	}
-	var rules []egresspolicy.PrivateExceptionRule
-	if h.privateExceptions != nil {
-		rules = h.privateExceptions.SnapshotRules()
+	loadRules := func(ruleCtx context.Context) []egresspolicy.PrivateExceptionRule {
+		if h.privateExceptions == nil || (identity.InstanceID == nil && identity.UserID == nil) {
+			return nil
+		}
+		return h.privateExceptions.SnapshotRulesContext(ruleCtx)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	dial := h.baseDialContext
 	if dial == nil {
@@ -665,7 +669,7 @@ func (h *EgressProxyHandler) proxyDialContext(ctx context.Context, network, addr
 			}
 			if !egresspolicy.IsPublicAddress(ip) {
 				if h.privateExceptions == nil || !egresspolicy.MatchPrivateException(
-					h.privateExceptions.SnapshotRules(), identity.InstanceID, identity.UserID, ip, port,
+					loadRules(ctx), identity.InstanceID, identity.UserID, ip, port,
 				) {
 					return errors.New("egress destination is unavailable")
 				}
@@ -685,11 +689,12 @@ func (h *EgressProxyHandler) proxyDialContext(ctx context.Context, network, addr
 		revoke, _ := ctx.Value(egressRevokeContextKey{}).(context.CancelFunc)
 		return newEgressGuardedConn(conn, check, revoke), nil
 	}
-	return egresspolicy.DialContextAllowingPrivateExceptions(
+	return egresspolicy.DialContextWithPolicyAndPrivateRuleSource(
 		ctx,
 		network,
 		address,
-		rules,
+		h.policy,
+		loadRules,
 		identity.InstanceID,
 		identity.UserID,
 		h.lookupNetIP,
@@ -697,14 +702,39 @@ func (h *EgressProxyHandler) proxyDialContext(ctx context.Context, network, addr
 	)
 }
 
-// Only authenticated in-process context can carry egress identity. Caller headers
-// and source IPs are deliberately never consulted, including in legacy mode.
+// Capabilities provide protected identity; legacy listeners also verify proxy credentials.
+// Caller ID headers and source IPs never prove ownership.
 func (h *EgressProxyHandler) resolveEgressIdentity(c *gin.Context) egressRequestIdentity {
 	if c == nil || c.Request == nil {
 		return egressRequestIdentity{}
 	}
 	identity, _ := c.Request.Context().Value(egressIdentityContextKey{}).(egressRequestIdentity)
-	return identity
+	if identity.InstanceID != nil || identity.UserID != nil || h.capabilities != nil || h.instances == nil {
+		return identity
+	}
+	if auth := c.GetHeader("Proxy-Authorization"); auth != "" {
+		// Reuse net/http's Basic parser without touching origin Authorization.
+		request := &http.Request{Header: http.Header{"Authorization": []string{auth}}}
+		username, password, ok := request.BasicAuth()
+		instanceID, err := strconv.Atoi(username)
+		if !ok || err != nil || instanceID <= 0 {
+			return egressRequestIdentity{}
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		instance, err := h.instances.GetByIDContext(ctx, instanceID)
+		if err != nil || instance == nil || instance.ID != instanceID || instance.UserID <= 0 || instance.RuntimeSecurityProfile != "" || instance.AccessToken == nil || strings.TrimSpace(*instance.AccessToken) == "" {
+			return egressRequestIdentity{}
+		}
+		expected := egresspolicy.InstanceProxyPassword(instanceID, strings.TrimSpace(*instance.AccessToken))
+		if !hmac.Equal([]byte(password), []byte(expected)) {
+			return egressRequestIdentity{}
+		}
+		userID := instance.UserID
+		return egressRequestIdentity{InstanceID: &instanceID, UserID: &userID}
+	}
+	// Neither a recycled Pod IP nor a caller-supplied ID proves ownership.
+	return egressRequestIdentity{}
 }
 
 const egressRecheckInterval = 5 * time.Second
@@ -784,14 +814,22 @@ func (h *EgressProxyHandler) authorizedRequest(c *gin.Context, token string, ide
 	}
 }
 
-func (h *EgressProxyHandler) recordBlockedEgress(c *gin.Context, host, reason string) {
+func (h *EgressProxyHandler) recordBlockedEgress(c *gin.Context, host, reason string, identity egressRequestIdentity) {
 	if h.audit == nil {
 		return
 	}
-	identity := h.resolveEgressIdentity(c)
 	remoteAddr := strings.TrimSpace(c.Request.RemoteAddr)
 	message := fmt.Sprintf("Blocked egress to %s (%s) from %s", host, reason, remoteAddr)
-	if err := h.audit.RecordEvent(&models.AuditEvent{
+	writer, ok := h.audit.(interface {
+		RecordEventContext(context.Context, *models.AuditEvent) error
+	})
+	if !ok {
+		log.Printf("egress audit writer lacks context support: %s", message)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	defer cancel()
+	if err := writer.RecordEventContext(ctx, &models.AuditEvent{
 		TraceID:      fmt.Sprintf("egress_%d", time.Now().UnixNano()),
 		InstanceID:   identity.InstanceID,
 		EventType:    "egress.llm.blocked",

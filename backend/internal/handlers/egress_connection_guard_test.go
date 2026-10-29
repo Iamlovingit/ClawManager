@@ -24,6 +24,13 @@ func (s *liveEgressRules) SnapshotRules() []egresspolicy.PrivateExceptionRule {
 	return append([]egresspolicy.PrivateExceptionRule(nil), s.rules...)
 }
 
+func (s *liveEgressRules) SnapshotRulesContext(ctx context.Context) []egresspolicy.PrivateExceptionRule {
+	if ctx.Err() != nil {
+		return nil
+	}
+	return s.SnapshotRules()
+}
+
 // The selected destination is synthetic; every connection is real TCP.
 func liveEgressTCP(t *testing.T, h *EgressProxyHandler, ctx context.Context, selected string) (net.Conn, net.Conn) {
 	t.Helper()

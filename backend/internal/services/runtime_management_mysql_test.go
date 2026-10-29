@@ -350,15 +350,17 @@ func runtimeManagementMySQLMoveFixture(t *testing.T) (db.Session, *RuntimeManage
 		name, uid string
 		used      int
 	}{{1, "source", "source-uid", 1}, {2, "target", "target-uid", 0}} {
-		exec("INSERT INTO runtime_pods (id,runtime_type,namespace,pod_name,pod_uid,deployment_name,image_ref,image_digest,agent_endpoint,state,capacity,used_slots,last_seen_at) VALUES (?,'opencode','runtime',?,?,'runtime','image',?,'https://agent','ready',2,?,NOW())", pod.id, pod.name, pod.uid, digest, pod.used)
+		ip := fmt.Sprintf("10.30.0.%d", pod.id)
+		exec("INSERT INTO runtime_pods (id,runtime_type,namespace,pod_name,pod_uid,pod_ip,deployment_name,image_ref,image_digest,agent_endpoint,state,capacity,used_slots,last_seen_at) VALUES (?,'opencode','runtime',?,?,?,'runtime','image',?,?,'ready',2,?,NOW())", pod.id, pod.name, pod.uid, ip, digest, "https://"+ip+":19090", pod.used)
 	}
 	exec("INSERT INTO instance_runtime_bindings (instance_id,runtime_pod_id,runtime_type,gateway_id,gateway_port,workspace_path,state,generation) VALUES (101,1,'opencode','gw-101-1',20000,?,'running',1)", workspace)
 	totalCPU, totalMemory, coordCPU, coordMemory, slotCPU, slotMemory := int64(4000), int64(16*1024*1024*1024), int64(100), int64(128*1024*1024), int64(1000), int64(4*1024*1024*1024)
 	requestCPU, requestMemory := int64(100), int64(1<<30)
 	port1, port2 := 20000, 20003
 	deployments := &fakeRuntimeDeploymentService{}
-	for _, pod := range []struct{ name, uid string }{{"source", "source-uid"}, {"target", "target-uid"}} {
-		deployments.pods = append(deployments.pods, k8s.RuntimeDeploymentPod{RuntimeType: "opencode", Namespace: "runtime", DeploymentName: "runtime", PodName: pod.name, PodUID: pod.uid, State: "ready", ImageRef: "image", ImageDigest: digest, Capacity: 2, WorkspaceStorageIdentity: "pvc:runtime/shared:uid:pv", CPUMillisLimit: &totalCPU, MemoryBytesLimit: &totalMemory, CoordinatorCPUMillis: &coordCPU, CoordinatorMemoryBytes: &coordMemory, Slots: []models.RuntimeSlot{{Index: 1, ContainerName: "slot-0", Ready: true, GatewayPort: &port1, CPUMillisLimit: &slotCPU, MemoryBytesLimit: &slotMemory}, {Index: 2, ContainerName: "slot-1", Ready: true, GatewayPort: &port2, CPUMillisLimit: &slotCPU, MemoryBytesLimit: &slotMemory}}})
+	for index, pod := range []struct{ name, uid string }{{"source", "source-uid"}, {"target", "target-uid"}} {
+		ip := fmt.Sprintf("10.30.0.%d", index+1)
+		deployments.pods = append(deployments.pods, k8s.RuntimeDeploymentPod{PodIP: &ip, RuntimeType: "opencode", Namespace: "runtime", DeploymentName: "runtime", PodName: pod.name, PodUID: pod.uid, State: "ready", ImageRef: "image", ImageDigest: digest, Capacity: 2, WorkspaceStorageIdentity: "pvc:runtime/shared:uid:pv", CPUMillisLimit: &totalCPU, MemoryBytesLimit: &totalMemory, CoordinatorCPUMillis: &coordCPU, CoordinatorMemoryBytes: &coordMemory, Slots: []models.RuntimeSlot{{Index: 1, ContainerName: "slot-0", Ready: true, GatewayPort: &port1, CPUMillisLimit: &slotCPU, MemoryBytesLimit: &slotMemory}, {Index: 2, ContainerName: "slot-1", Ready: true, GatewayPort: &port2, CPUMillisLimit: &slotCPU, MemoryBytesLimit: &slotMemory}}})
 	}
 	for i := range deployments.pods {
 		p := &deployments.pods[i]
@@ -373,6 +375,40 @@ func runtimeManagementMySQLMoveFixture(t *testing.T) (db.Session, *RuntimeManage
 	scheduler := NewRuntimeScheduler(repository.NewInstanceRepository(sess), repository.NewRuntimePodRepository(sess), repository.NewInstanceRuntimeBindingRepository(sess), repository.NewRuntimeRolloutRepository(sess), agent, nil, nil, deployments, time.Second, WithRuntimeSchedulerNamespace("runtime"), WithRuntimeSchedulerWorkspaceRoot(root), WithRuntimeSchedulerGatewayEnvBuilder(func(*models.Instance) (map[string]string, error) { return map[string]string{}, nil }))
 	scheduler.upgrade = NewRuntimeUpgradeService(sess, repository.NewRuntimeRolloutRepository(sess), repository.NewRuntimePodRepository(sess), repository.NewInstanceRuntimeBindingRepository(sess), agent, root, "")
 	return sess, NewRuntimeManagementService(sess, scheduler, repository.NewNorthboundRepository(sess)), agent
+}
+
+func TestRuntimeManagementMySQLBindingCreateKeepsFenceOnOneConnection(t *testing.T) {
+	sess, _, _ := runtimeManagementMySQLMoveFixture(t)
+	sess.SetMaxOpenConns(1)
+	repo := repository.NewInstanceRuntimeBindingRepository(sess)
+	binding, err := repo.GetByInstanceID(context.Background(), 101)
+	if err != nil || binding == nil {
+		t.Fatalf("read source binding: %+v %v", binding, err)
+	}
+	if _, err := sess.SQL().Exec("DELETE FROM instance_runtime_bindings WHERE instance_id=101"); err != nil {
+		t.Fatal(err)
+	}
+	binding.ID = 0
+	if _, err := sess.SQL().Exec("INSERT INTO gateway_runtime_upgrades(instance_id,owner_user_id,generation,operation_id,state,created_at,updated_at) VALUES(101,1,1,?,'reserved',NOW(),NOW())", strings.Repeat("a", 32)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := repo.Create(ctx, binding); !errors.Is(err, models.ErrRuntimeUpgradeInProgress) {
+		t.Fatalf("active upgrade fence bypassed: %v", err)
+	}
+	if _, err := sess.SQL().Exec("DELETE FROM gateway_runtime_upgrades WHERE instance_id=101"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancelCreate := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelCreate()
+	if err := repo.Create(ctx, binding); err != nil {
+		t.Fatalf("binding create needs a second connection while holding its FK parent: %v", err)
+	}
+	created, err := repo.GetByInstanceID(context.Background(), 101)
+	if err != nil || created == nil || created.GatewayID != binding.GatewayID {
+		t.Fatalf("binding not committed: %+v %v", created, err)
+	}
 }
 
 func TestRuntimeManagementMySQLSuccessfulMoveUsesExactSlotAndNewGeneration(t *testing.T) {

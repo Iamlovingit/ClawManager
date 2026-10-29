@@ -2,9 +2,11 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,15 +65,26 @@ type RuntimeCapabilityVerifier interface {
 // GatewayAuthWithRuntimeCapabilities adds model capability authentication and
 // rejects legacy instance credentials for protected assignments.
 func GatewayAuthWithRuntimeCapabilities(instanceRepo repository.InstanceRepository, verifier RuntimeCapabilityVerifier, protectedInstance func(context.Context, int) (bool, error), bindingRepos ...repository.InstanceRuntimeBindingRepository) gin.HandlerFunc {
-	return gatewayAuth(instanceRepo, verifier, protectedInstance, true, bindingRepos...)
+	return gatewayAuth(instanceRepo, nil, verifier, protectedInstance, true, bindingRepos...)
 }
 
 // GatewayAuth accepts either a normal user access JWT or an instance lifecycle gateway token.
 func GatewayAuth(instanceRepo repository.InstanceRepository, bindingRepos ...repository.InstanceRuntimeBindingRepository) gin.HandlerFunc {
-	return gatewayAuth(instanceRepo, nil, nil, false, bindingRepos...)
+	return gatewayAuth(instanceRepo, nil, nil, nil, false, bindingRepos...)
 }
 
-func gatewayAuth(instanceRepo repository.InstanceRepository, verifier RuntimeCapabilityVerifier, protectedInstance func(context.Context, int) (bool, error), capabilities bool, bindingRepos ...repository.InstanceRuntimeBindingRepository) gin.HandlerFunc {
+// GatewayAuthWithGatewayKeys accepts governed keys alongside user and legacy instance tokens.
+func GatewayAuthWithGatewayKeys(instanceRepo repository.InstanceRepository, gatewayKeyRepo repository.GatewayKeyRepository, bindingRepos ...repository.InstanceRuntimeBindingRepository) gin.HandlerFunc {
+	return gatewayAuth(instanceRepo, gatewayKeyRepo, nil, nil, false, bindingRepos...)
+}
+
+// GatewayAuthWithRuntimeCapabilitiesAndGatewayKeys keeps protected instance authentication
+// capability-only while retaining governed keys for user and unprotected instance access.
+func GatewayAuthWithRuntimeCapabilitiesAndGatewayKeys(instanceRepo repository.InstanceRepository, gatewayKeyRepo repository.GatewayKeyRepository, verifier RuntimeCapabilityVerifier, protectedInstance func(context.Context, int) (bool, error), bindingRepos ...repository.InstanceRuntimeBindingRepository) gin.HandlerFunc {
+	return gatewayAuth(instanceRepo, gatewayKeyRepo, verifier, protectedInstance, true, bindingRepos...)
+}
+
+func gatewayAuth(instanceRepo repository.InstanceRepository, gatewayKeyRepo repository.GatewayKeyRepository, verifier RuntimeCapabilityVerifier, protectedInstance func(context.Context, int) (bool, error), capabilities bool, bindingRepos ...repository.InstanceRuntimeBindingRepository) gin.HandlerFunc {
 	var bindingRepo repository.InstanceRuntimeBindingRepository
 	if len(bindingRepos) > 0 {
 		bindingRepo = bindingRepos[0]
@@ -114,6 +127,24 @@ func gatewayAuth(instanceRepo repository.InstanceRepository, verifier RuntimeCap
 				rejectGatewayToken(c)
 				return
 			}
+			// The capability remains the credential. Resolve governance separately
+			// by the verified instance's stable managed-key identity.
+			if gatewayKeyRepo != nil {
+				keyID := "legacy-instance-" + strconv.Itoa(identity.InstanceID)
+				key, err := gatewayKeyRepo.GetByKeyID(keyID)
+				if err != nil {
+					rejectGatewayToken(c)
+					return
+				}
+				// Pre-migration instances may not yet have a managed key.
+				if key != nil {
+					if key.KeyID != keyID || key.KeyType != models.GatewayKeyTypeManagedInstance || key.InstanceID == nil || *key.InstanceID != identity.InstanceID || key.OwnerUserID == nil || *key.OwnerUserID != identity.UserID || !key.IsUsable(time.Now().UTC()) {
+						rejectGatewayToken(c)
+						return
+					}
+					applyGatewayKeyContext(c, key, gatewayKeyRepo)
+				}
+			}
 			verified = identity
 		} else {
 			if claims, err := validateUserAccessToken(tokenString); err == nil {
@@ -122,6 +153,65 @@ func gatewayAuth(instanceRepo repository.InstanceRepository, verifier RuntimeCap
 				c.Next()
 				return
 			}
+
+			if gatewayKeyRepo != nil {
+				key, err := gatewayKeyRepo.GetByToken(tokenString)
+				if err != nil {
+					c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid gateway token"})
+					c.Abort()
+					return
+				}
+				if key != nil {
+					if !key.IsUsable(time.Now().UTC()) {
+						c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Gateway key is disabled, revoked, or expired"})
+						c.Abort()
+						return
+					}
+					applyGatewayKeyContext(c, key, gatewayKeyRepo)
+					if key.OwnerUserID != nil {
+						c.Set("userID", *key.OwnerUserID)
+					}
+					if key.InstanceID != nil {
+						if instanceRepo == nil {
+							rejectGatewayToken(c)
+							return
+						}
+						if capabilities {
+							if protectedInstance == nil {
+								rejectGatewayToken(c)
+								return
+							}
+							ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+							protected, err := protectedInstance(ctx, *key.InstanceID)
+							cancel()
+							if err != nil || protected {
+								rejectGatewayToken(c)
+								return
+							}
+						}
+						instance, getErr := instanceRepo.GetByID(*key.InstanceID)
+						if getErr != nil || instance == nil {
+							c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Gateway key instance is unavailable"})
+							c.Abort()
+							return
+						}
+						applyGatewayInstanceContext(c, instance, bindingRepo)
+						c.Set("gatewayAuthType", "virtual_key")
+					} else {
+						c.Set("gatewayAuthType", "virtual_key")
+					}
+					principal, principalExists := c.Get("userID")
+					principalID, principalOK := principal.(int)
+					if !principalExists || !principalOK || principalID <= 0 {
+						c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Gateway key owner is unavailable"})
+						c.Abort()
+						return
+					}
+					c.Next()
+					return
+				}
+			}
+
 			if instanceRepo == nil {
 				rejectGatewayToken(c)
 				return
@@ -149,6 +239,7 @@ func gatewayAuth(instanceRepo repository.InstanceRepository, verifier RuntimeCap
 
 		c.Set("userID", instance.UserID)
 		c.Set("instanceID", instance.ID)
+		c.Set("runtimeGeneration", instance.RuntimeGeneration)
 		c.Set("instanceType", strings.TrimSpace(instance.Type))
 		c.Set("instanceMode", gatewayInstanceMode(instance.InstanceMode, instance.RuntimeType))
 		c.Set("runtimeType", strings.TrimSpace(instance.RuntimeType))
@@ -172,8 +263,41 @@ func gatewayAuth(instanceRepo repository.InstanceRepository, verifier RuntimeCap
 	}
 }
 
+// applyGatewayKeyContext shares policy and attribution between key-authenticated
+// calls and capability-authenticated calls governed by the same managed key.
+func applyGatewayKeyContext(c *gin.Context, key *models.GatewayKey, gatewayKeyRepo repository.GatewayKeyRepository) {
+	_ = gatewayKeyRepo.Touch(c.Request.Context(), key.ID, time.Now().UTC())
+	c.Set("gatewayKeyID", key.KeyID)
+	c.Set("gatewayKeyDBID", key.ID)
+	c.Set("gatewayKeyType", key.KeyType)
+	c.Set("gatewayKeyRPMLimit", key.RPMLimit)
+	c.Set("gatewayKeyTPMLimit", key.TPMLimit)
+	c.Set("gatewayKeyConcurrencyLimit", key.ConcurrentRequestsLimit)
+	if key.AllowedModelGroups != nil {
+		var groups []string
+		if json.Unmarshal([]byte(*key.AllowedModelGroups), &groups) == nil {
+			c.Set("gatewayAllowedModelGroups", groups)
+		}
+	}
+}
+
 func rejectGatewayToken(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid gateway token"})
+}
+
+func applyGatewayInstanceContext(c *gin.Context, instance *models.Instance, bindingRepo repository.InstanceRuntimeBindingRepository) {
+	c.Set("userID", instance.UserID)
+	c.Set("instanceID", instance.ID)
+	c.Set("runtimeGeneration", instance.RuntimeGeneration)
+	c.Set("instanceType", strings.TrimSpace(instance.Type))
+	c.Set("instanceMode", gatewayInstanceMode(instance.InstanceMode, instance.RuntimeType))
+	c.Set("runtimeType", strings.TrimSpace(instance.RuntimeType))
+	if bindingRepo != nil {
+		if binding, err := bindingRepo.GetRunningByInstanceID(c.Request.Context(), instance.ID); err == nil && binding != nil {
+			c.Set("gatewayID", strings.TrimSpace(binding.GatewayID))
+			c.Set("runtimePodID", binding.RuntimePodID)
+		}
+	}
 }
 
 func gatewayInstanceMode(instanceMode, runtimeType string) string {

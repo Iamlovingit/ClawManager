@@ -34,11 +34,12 @@ type pendingSlotReplayFixture struct {
 
 func newPendingSlotReplayFixture(t *testing.T) *pendingSlotReplayFixture {
 	t.Helper()
-	endpoint, uid := "https://10.0.0.2:19090", "pod-uid"
+	endpoint, uid, ip := "https://10.0.0.2:19090", "pod-uid", "10.0.0.2"
+	now := time.Now()
 	workspace := "/workspaces/openclaw/user-2/instance-7"
 	f := &pendingSlotReplayFixture{
 		instance: models.Instance{ID: 7, UserID: 2, Type: RuntimeTypeOpenClaw, RuntimeType: RuntimeBackendGateway, InstanceMode: InstanceModeLite, Status: "creating", RuntimeGeneration: 2, WorkspacePath: &workspace},
-		pod:      &models.RuntimePod{ID: 9, RuntimeType: RuntimeTypeOpenClaw, AgentEndpoint: &endpoint, PodUID: &uid, State: "ready", Capacity: 8},
+		pod:      &models.RuntimePod{ID: 9, RuntimeType: RuntimeTypeOpenClaw, Namespace: "runtime", PodName: "pool", DeploymentName: "openclaw-runtime", ImageRef: "repo/openclaw:test", PodIP: &ip, LastSeenAt: &now, AgentEndpoint: &endpoint, PodUID: &uid, State: "ready", Capacity: 8},
 		binding:  &models.InstanceRuntimeBinding{InstanceID: 7, RuntimePodID: 9, RuntimeType: RuntimeTypeOpenClaw, GatewayID: "pending-7-2", GatewayPort: 20003, WorkspacePath: workspace, State: "creating", Generation: 2},
 		kube:     fake.NewSimpleClientset(slotTestPod()), bindings: newFakeRuntimeBindingRepo(),
 	}
@@ -59,7 +60,9 @@ func newPendingSlotReplayFixture(t *testing.T) *pendingSlotReplayFixture {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"gateway_id":"gw-7-2","status":"running","port":%d}`, req.GatewayPort)))}, nil
 	})}
 	f.client = NewSlotRuntimeAgentClientWithHTTPClient("token", f.kube, "runtime", httpClient).(*slotRuntimeAgentClient)
-	f.scheduler = NewRuntimeScheduler(newFakeRuntimeInstanceRepo(), f.pods, f.bindings, &fakeRuntimeRolloutRepo{}, f.client, nil, nil, nil, time.Second,
+	deployments := &fakeRuntimeDeploymentService{pods: []k8sservice.RuntimeDeploymentPod{{RuntimeType: f.pod.RuntimeType, Namespace: f.pod.Namespace, PodName: f.pod.PodName, DeploymentName: f.pod.DeploymentName, PodUID: uid, PodIP: &ip, ImageRef: f.pod.ImageRef, State: "ready"}}}
+	f.scheduler = NewRuntimeScheduler(newFakeRuntimeInstanceRepo(), f.pods, f.bindings, &fakeRuntimeRolloutRepo{}, f.client, nil, nil, deployments, time.Second,
+		WithRuntimeSchedulerNamespace("runtime"),
 		WithRuntimeSchedulerGatewayEnvBuilder(func(*models.Instance) (map[string]string, error) {
 			f.envCalls++
 			return map[string]string{"BUSINESS_TOKEN": "newly-issued-token"}, nil

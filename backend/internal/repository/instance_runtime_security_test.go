@@ -75,7 +75,7 @@ func runtimeSecurityMySQL(t *testing.T) *instanceRepository {
 			}
 		}
 		if column == "id" {
-			sqlType += " PRIMARY KEY"
+			sqlType = "INT PRIMARY KEY"
 		} else if !nullable {
 			switch columnType.Kind() {
 			case reflect.String:
@@ -91,12 +91,14 @@ func runtimeSecurityMySQL(t *testing.T) *instanceRepository {
 	if _, err = sess.SQL().Exec("CREATE TABLE instances (" + strings.Join(columns, ",") + ")"); err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile("../db/migrations/077_add_runtime_security_profile.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = sess.SQL().Exec(string(migration)); err != nil {
-		t.Fatal(err)
+	for _, file := range []string{"077_add_runtime_security_profile.sql", "066_add_runtime_upgrade_fence.sql"} {
+		migration, err := os.ReadFile("../db/migrations/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = sess.SQL().Exec(string(migration)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err = sess.SQL().Exec("INSERT INTO instances (id,user_id,name,status,runtime_generation) VALUES (7,3,'before','creating',2)"); err != nil {
 		t.Fatal(err)
@@ -162,5 +164,13 @@ func TestRuntimeSecurityProtectionRejectsUnknownStoredProfiles(t *testing.T) {
 				t.Errorf("unknown marker changed from %q to %q", profile, current.RuntimeSecurityProfile)
 			}
 		})
+	}
+}
+
+func TestRuntimeSecurityProtectionRejectsMissingInstance(t *testing.T) {
+	r := runtimeSecurityMySQL(t)
+	err := r.ProtectRuntimeGeneration(context.Background(), 8, 2, "isolated-network-v1")
+	if err == nil || !strings.Contains(err.Error(), "runtime security transition lost assignment") {
+		t.Fatalf("missing instance did not fail the security transition: %v", err)
 	}
 }

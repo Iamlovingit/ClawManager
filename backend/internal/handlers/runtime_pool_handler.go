@@ -117,8 +117,16 @@ func (h *RuntimePoolHandler) GetRollout(c *gin.Context) {
 		utils.HandleError(c, err)
 		return
 	}
+	operation, err := services.LoadRuntimePoolOperation(c.Request.Context(), h.rolloutRepo, id)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	if operation != nil {
+		details.Execution = nil
+	}
 	utils.Success(c, http.StatusOK, "Runtime rollout retrieved successfully", gin.H{
-		"rollout": details.Rollout, "items": details.Items, "audits": details.Audits, "pool_progress": progress, "execution": details.Execution,
+		"rollout": details.Rollout, "items": details.Items, "audits": details.Audits, "pool_progress": progress, "pool_operation": operation, "execution": details.Execution,
 	})
 }
 
@@ -234,6 +242,10 @@ func (h *RuntimePoolHandler) StartRollout(c *gin.Context) {
 		return
 	}
 	targetImage := strings.TrimSpace(req.TargetImageRef)
+	if runtimeType == "opencode" {
+		utils.Error(c, http.StatusConflict, models.ErrOpenCodeSafeUpgradeRequired.Error())
+		return
+	}
 	if targetImage == "" {
 		utils.Error(c, http.StatusBadRequest, "target image ref is required")
 		return
@@ -250,6 +262,7 @@ func (h *RuntimePoolHandler) StartRollout(c *gin.Context) {
 	rolloutPhase := "requested"
 	var sourceImagesJSON *string
 	var targetImageDigest *string
+	var poolSwitchJSON *string
 	if runtimeType == services.RuntimeTypeHermes {
 		resolved, digest, err := services.ResolveHermesRolloutImage(c.Request.Context(), targetImage)
 		if err != nil {
@@ -303,7 +316,9 @@ func (h *RuntimePoolHandler) StartRollout(c *gin.Context) {
 		// A recognized pre-8.1 OpenClaw target deliberately rejoins the
 		// unchanged generic Lite rolling-update path below.
 		targetImage = classification.ImageRef
-		if classification.EmptyPoolReset {
+		{
+			// Ordinary legacy updates also need a frozen serving-pool scope for
+			// subsequent placement; otherwise an earlier empty reset pins its image.
 			encoded, marshalErr := json.Marshal(classification.SourceImages)
 			if marshalErr != nil {
 				utils.Error(c, http.StatusInternalServerError, "failed to preserve the current OpenClaw pool image inventory")
@@ -311,7 +326,12 @@ func (h *RuntimePoolHandler) StartRollout(c *gin.Context) {
 			}
 			value := string(encoded)
 			sourceImagesJSON = &value
-			rolloutPhase = services.RuntimeUpgradePhaseEmptyPoolReset
+			if classification.EmptyPoolReset {
+				rolloutPhase = services.RuntimeUpgradePhaseEmptyPoolReset
+				raw, _ := json.Marshal(map[string]any{"pool_switch_waiting_instance_ids": classification.WaitingInstanceIDs})
+				value := string(raw)
+				poolSwitchJSON = &value
+			}
 		}
 		if classification.ImageDigest != "" {
 			value := classification.ImageDigest
@@ -323,6 +343,7 @@ func (h *RuntimePoolHandler) StartRollout(c *gin.Context) {
 		TargetImageRef:    targetImage,
 		SourceImagesJSON:  sourceImagesJSON,
 		TargetImageDigest: targetImageDigest,
+		PreflightJSON:     poolSwitchJSON,
 		Status:            "pending",
 		Phase:             rolloutPhase,
 		BatchSize:         batchSize,

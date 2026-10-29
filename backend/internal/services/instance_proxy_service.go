@@ -29,22 +29,25 @@ import (
 
 // InstanceProxyService handles proxying requests to instance pods
 type InstanceProxyService struct {
-	ownerUsage           *ownerrecords.Store
-	serviceService       *k8s.ServiceService
-	accessService        *InstanceAccessService
-	instanceRepo         repository.InstanceRepository
-	runtimePodRepo       repository.RuntimePodRepository
-	bindingRepo          repository.InstanceRuntimeBindingRepository
-	httpClient           *http.Client
-	openClawGatewayToken string
-	openClawProxyOrigin  string
-	serviceCache         map[serviceCacheKey]serviceCacheEntry
-	serviceLookups       map[serviceCacheKey]*serviceLookupCall
-	cacheMu              sync.RWMutex
-	lookupMu             sync.Mutex
-	serviceTTL           time.Duration
-	proxyPolicy          *RuntimeProxyPolicyCoordinator
-	runtimeSecurity      *RuntimeSecurityAuthority
+	serviceService           *k8s.ServiceService
+	accessService            *InstanceAccessService
+	instanceRepo             repository.InstanceRepository
+	runtimePodRepo           repository.RuntimePodRepository
+	bindingRepo              repository.InstanceRuntimeBindingRepository
+	httpClient               *http.Client
+	openClawGatewayToken     string
+	openClawProxyOrigin      string
+	serviceCache             map[serviceCacheKey]serviceCacheEntry
+	serviceLookups           map[serviceCacheKey]*serviceLookupCall
+	cacheMu                  sync.RWMutex
+	lookupMu                 sync.Mutex
+	serviceTTL               time.Duration
+	openCodeBootstrapEnabled bool
+	openCodeBootstrapMu      sync.Mutex
+	openCodeBootstraps       map[string]*openCodeBootstrapCall
+	ownerUsage               *ownerrecords.Store
+	proxyPolicy              *RuntimeProxyPolicyCoordinator
+	runtimeSecurity          *RuntimeSecurityAuthority
 }
 
 type serviceCacheKey struct {
@@ -185,6 +188,14 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	}
 	proxyPrefix := instanceProxyPrefix(instanceID)
 	bootstrapPath := stripInstanceProxyPrefix(targetPath, instanceID)
+	openCodeStorageScope := ""
+	if opencodeLite && isOpenCodeBrowserDocumentRequest(r, bootstrapPath) {
+		instance, lookupErr := s.instanceRepo.GetByID(instanceID)
+		if lookupErr != nil || instance == nil {
+			return fmt.Errorf("failed to resolve OpenCode browser storage identity")
+		}
+		openCodeStorageScope = openCodeBrowserStorageScope(instance)
+	}
 
 	// Copy query parameters, excluding ClawManager-owned proxy/gateway tokens.
 	// DSH's plugin loader uses a significant leading '?' inside RawQuery
@@ -200,6 +211,17 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 		openCodeProjectSearchRewritten = s.rewriteOpenCodeProjectSearchDirectory(ctx, instanceID, accessToken.InstanceType, bootstrapPath, queryParams)
 		if len(queryParams) > 0 {
 			targetURL.RawQuery = queryParams.Encode()
+		}
+	}
+	if s.openCodeBootstrapEnabled && opencodeLite && openCodeStorageScope != "" && bootstrapPath == "/" && len(queryParams) == 0 {
+		sessionID, bootstrapErr := s.ensureOpenCodeInitialSession(ctx, instanceID, targetURL, managedGatewayToken)
+		if bootstrapErr != nil {
+			return fmt.Errorf("failed to initialize OpenCode session: %w", bootstrapErr)
+		}
+		if sessionID != "" {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, openCodeSessionBrowserRoute(r, sessionID), http.StatusTemporaryRedirect)
+			return nil
 		}
 	}
 
@@ -250,8 +272,13 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	} else if !isRuntimePublicAuthPath(bootstrapPath) {
 		setManagedRuntimeGatewayAuthHeaders(proxyReq.Header, managedGatewayToken)
 	}
-	if shouldRewriteHTML {
+	if shouldRewriteHTML || openCodeStorageScope != "" {
 		proxyReq.Header.Del("Accept-Encoding")
+	}
+	if openCodeStorageScope != "" {
+		// Cached upstream HTML predates our instance-specific bootstrap.
+		proxyReq.Header.Del("If-None-Match")
+		proxyReq.Header.Del("If-Modified-Since")
 	}
 	if openCodeProjectSearchRewritten {
 		proxyReq.Header.Del("Accept-Encoding")
@@ -299,7 +326,7 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 
-	if shouldRewriteHTML && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+	if (shouldRewriteHTML || openCodeStorageScope != "") && strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		body, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			return fmt.Errorf("failed to read upstream html: %w", readErr)
@@ -308,10 +335,18 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 			return fmt.Errorf("failed to close upstream html body: %w", closeErr)
 		}
 
-		modifiedBody := injectProxyBase(string(body), proxyBaseForRequestPath(effectiveRequestPath, instanceID))
-		if opencodeLite {
-			modifiedBody = rewriteOpenCodeHTMLRootAssets(modifiedBody, proxyPrefix)
-			modifiedBody = injectOpenCodeAbsolutePathPatch(modifiedBody, proxyPrefix)
+		modifiedBody := string(body)
+		if shouldRewriteHTML {
+			modifiedBody = injectProxyBase(modifiedBody, proxyBaseForRequestPath(effectiveRequestPath, instanceID))
+			if opencodeLite {
+				modifiedBody = rewriteOpenCodeHTMLRootAssets(modifiedBody, proxyPrefix)
+				modifiedBody = injectOpenCodeAbsolutePathPatch(modifiedBody, proxyPrefix)
+			}
+		}
+		if openCodeStorageScope != "" {
+			modifiedBody = injectOpenCodeBrowserStorageScope(modifiedBody, openCodeStorageScope)
+			resp.Header.Set("Cache-Control", "no-store")
+			resp.Header.Del("Last-Modified")
 		}
 		resp.Body = io.NopCloser(bytes.NewReader([]byte(modifiedBody)))
 		resp.ContentLength = int64(len(modifiedBody))
@@ -348,6 +383,17 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	return nil
 }
 
+func isOpenCodeEventStreamRequest(opencodeLite bool, targetPath string) bool {
+	if !opencodeLite {
+		return false
+	}
+	switch strings.TrimSpace(targetPath) {
+	case "/global/event", "/api/event":
+		return true
+	default:
+		return false
+	}
+}
 func copyEventStream(w http.ResponseWriter, body io.Reader) error {
 	buffer := make([]byte, 32*1024)
 	flusher, _ := w.(http.Flusher)
@@ -1180,8 +1226,9 @@ func (s *InstanceProxyService) GetProxyURLForInstance(instance *models.Instance,
 		return ""
 	}
 	if runtimeType, ok := v2RuntimeTypeForInstance(instance); ok && runtimeType == RuntimeTypeOpenCode {
-		// OpenCode owns the root of its dedicated origin. Falling back to the
-		// legacy subpath produces broken asset and WebSocket URLs.
+		// OpenCode's web UI owns the root of its origin. Do not fall back to the
+		// legacy /instances/{id}/proxy subpath when the deployment forgot its
+		// dedicated-origin template; fail access generation instead.
 		return managedRuntimePublicURL(runtimeType, instance.ID, token)
 	}
 	if runtimeType, ok := v2RuntimeTypeForInstance(instance); ok && runtimeType == RuntimeTypeDeepSeekHarness {

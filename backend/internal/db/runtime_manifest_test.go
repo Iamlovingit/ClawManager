@@ -269,6 +269,26 @@ func TestRuntimeManifestsExposeOpenCodePublicURLTemplate(t *testing.T) {
 	}
 }
 
+func TestNginxRoutesOpenCodePerInstanceOrigins(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "deployments", "nginx", "nginx.conf"))
+	if err != nil {
+		t.Fatalf("read nginx config: %v", err)
+	}
+	text := string(raw)
+	for _, required := range []string{
+		"server_name ~^opencode-(?<runtime_inst_id>[0-9]+)\\..+$;",
+		"X-ClawManager-Runtime-Origin opencode",
+		"/api/v1/instances/$runtime_inst_id/proxy$1",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("nginx config must contain %q", required)
+		}
+	}
+	if got := strings.Count(text, "proxy_set_header X-ClawManager-Runtime-Origin \"\";"); got < 2 {
+		t.Fatalf("public nginx routes must clear the dedicated-origin marker, got %d guards", got)
+	}
+}
 func TestDesktopAuthAcceptsDedicatedRuntimeInstanceVariable(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
 	raw, err := os.ReadFile(filepath.Join(repoRoot, "deployments", "nginx", "njs", "desktop_auth.js"))
@@ -487,7 +507,7 @@ func deploymentRuntimeManifests(repoRoot string) []string {
 	}
 }
 
-func TestNginxRoutesOpenCodePerInstanceOrigins(t *testing.T) {
+func TestNginxRoutesOpenCodePerInstanceOriginsAndClearsPublicHeader(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
 	raw, err := os.ReadFile(filepath.Join(repoRoot, "deployments", "nginx", "nginx.conf"))
 	if err != nil {

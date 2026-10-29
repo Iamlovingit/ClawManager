@@ -61,8 +61,8 @@ func TestRuntimeBalanceMySQLCompletedAffinityAdmitsProvenCopies(t *testing.T) {
 	oldCopy.Slots = oldCopy.Slots[:2]
 	oldCopy.WorkspaceStorageIdentity = copy.WorkspaceStorageIdentity
 	raw, _ := json.Marshal(map[string]string{"tenant/source": oldImage})
-	exec(`INSERT INTO instances(id,user_id,type,runtime_type,instance_mode,status,runtime_generation) VALUES(101,1,'openclaw','gateway','lite','running',1),(202,1,'openclaw','gateway','lite','running',1)`)
-	exec(`INSERT INTO runtime_rollouts(id,runtime_type,target_image_ref,target_image_digest,status,phase,preflight_id,source_images_json,preflight_json,batch_size) VALUES (7,'openclaw',?,?,'finished','completed','p7',?,'{"exclude_instance_ids":[202]}',1)`, newImage, newDigest, string(raw))
+	exec(`INSERT INTO instances(id,user_id,type,runtime_type,instance_mode,status,runtime_generation) VALUES(101,1,'openclaw','gateway','lite','running',1),(202,1,'openclaw','gateway','lite','running',1),(303,1,'openclaw','gateway','lite','creating',1)`)
+	exec(`INSERT INTO runtime_rollouts(id,runtime_type,target_image_ref,target_image_digest,status,phase,preflight_id,source_images_json,preflight_json,batch_size,started_at) VALUES (7,'openclaw',?,?,'finished','completed','p7',?,'{"exclude_instance_ids":[202]}',1,NOW()-INTERVAL 1 MINUTE)`, newImage, newDigest, string(raw))
 	exec(`INSERT INTO runtime_upgrade_items(rollout_id,instance_id,state,created_at,updated_at) VALUES(7,101,'verified',NOW(),NOW())`)
 	service := NewRuntimeUpgradeService(sess, repository.NewRuntimeRolloutRepository(sess), repository.NewRuntimePodRepository(sess), repository.NewInstanceRuntimeBindingRepository(sess), nil, "", "")
 	service.deployments = recoveryInventory{source, target, copy, oldCopy}

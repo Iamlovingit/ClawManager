@@ -35,6 +35,8 @@ import {
 } from "../../components/InstanceCollapsiblePanel";
 import InstanceSkillHubPanel from "../../components/InstanceSkillHubPanel";
 import InstanceSessionUsagePanel from "../../components/InstanceSessionUsagePanel";
+import RuntimeGovernanceBadge from "../../components/RuntimeGovernanceBadge";
+import RuntimeMaintenancePanel from "../../components/RuntimeMaintenancePanel";
 import { InstanceServiceFrame } from "../../components/InstanceServiceFrame";
 import RestartWithEnvironmentDialog from "../../components/RestartWithEnvironmentDialog";
 import UserLayout from "../../components/UserLayout";
@@ -789,7 +791,7 @@ const InstanceDetailPage: React.FC = () => {
   const handleAction = async (
     action: "start" | "stop" | "restart" | "delete",
   ) => {
-    if (!instance) {
+    if (!instance || actionLoading) {
       return;
     }
 
@@ -830,7 +832,7 @@ const InstanceDetailPage: React.FC = () => {
     environmentOverrides: Record<string, string>,
     environmentOverrideRemovals: string[],
   ) => {
-    if (!instance) {
+    if (!instance || actionLoading) {
       return;
     }
 
@@ -866,6 +868,7 @@ const InstanceDetailPage: React.FC = () => {
   const handleSelectOpenCodeProject = async (relativePath: string) => {
     if (
       !instance ||
+      actionLoading ||
       instance.type !== "opencode" ||
       instance.instance_mode !== "pro"
     ) {
@@ -1055,7 +1058,7 @@ const InstanceDetailPage: React.FC = () => {
   };
 
   const handleSaveDesktopStreamProfile = async () => {
-    if (!instance || desktopStreamProfile === desktopStreamSavedProfile) {
+    if (!instance || actionLoading || desktopStreamProfile === desktopStreamSavedProfile) {
       return;
     }
 
@@ -1074,7 +1077,7 @@ const InstanceDetailPage: React.FC = () => {
   };
 
   const handleApplyDesktopStreamProfile = async () => {
-    if (!instance) {
+    if (!instance || actionLoading) {
       return;
     }
 
@@ -1152,12 +1155,14 @@ const InstanceDetailPage: React.FC = () => {
           <span>{formatInstanceType(instance.type)}</span>
           <span>Mode {instance.instance_mode === "pro" ? "Pro" : "Lite"}</span>
           <span>Runtime {instance.runtime_type}</span>
+          {instance.type === "opencode" && <RuntimeGovernanceBadge instanceId={instance.id} />}
           <span>
             {formatBytes(
               status?.workspace_usage_bytes ?? instance.workspace_usage_bytes,
             )}
           </span>
           <span>{formatDateTime(instance.updated_at, locale)}</span>
+          {instance.type === "opencode" && <RuntimeMaintenancePanel key={instance.id} instanceId={instance.id} />}
         </div>
       </div>
 
@@ -1169,7 +1174,7 @@ const InstanceDetailPage: React.FC = () => {
               type="button"
               className="app-button-secondary"
               onClick={() => void handleAction("stop")}
-              disabled={actionLoading === "stop"}
+              disabled={actionLoading !== null}
             >
               <Square className="h-4 w-4" />
               {t("common.stop")}
@@ -1179,7 +1184,7 @@ const InstanceDetailPage: React.FC = () => {
               type="button"
               className="app-button-primary"
               onClick={() => void handleAction("start")}
-              disabled={actionLoading === "start"}
+              disabled={actionLoading !== null}
             >
               <Play className="h-4 w-4" />
               {t("common.start")}
@@ -1194,8 +1199,7 @@ const InstanceDetailPage: React.FC = () => {
                 void handleAction("restart");
               }}
               disabled={
-                actionLoading === "restart" ||
-                actionLoading === "restart-environment" ||
+                actionLoading !== null ||
                 instance.status === "deleting"
               }
             >
@@ -1210,8 +1214,7 @@ const InstanceDetailPage: React.FC = () => {
               className="app-button-secondary -ml-px rounded-l-none px-2"
               onClick={() => setRestartMenuOpen((open) => !open)}
               disabled={
-                actionLoading === "restart" ||
-                actionLoading === "restart-environment" ||
+                actionLoading !== null ||
                 instance.status === "deleting"
               }
             >
@@ -1249,7 +1252,7 @@ const InstanceDetailPage: React.FC = () => {
             type="button"
             className="app-button-secondary border-red-200 text-red-700 hover:border-red-300 hover:bg-red-50 hover:text-red-800"
             onClick={() => setShowDeleteDialog(true)}
-            disabled={instance.status === "deleting"}
+            disabled={actionLoading !== null || instance.status === "deleting"}
           >
             <Trash2 className="h-4 w-4" />
             {t("common.delete")}
@@ -1671,6 +1674,7 @@ const InstanceDetailPage: React.FC = () => {
   const desktopStreamDirty = desktopStreamProfile !== desktopStreamSavedProfile;
   const restartActionActive =
     actionLoading === "restart" ||
+    actionLoading === "select-opencode-project" ||
     actionLoading === "restart-environment" ||
     actionLoading === "desktop-stream-restart";
 
@@ -1725,7 +1729,7 @@ const InstanceDetailPage: React.FC = () => {
                     ? handleSelectOpenCodeProject
                     : undefined
                 }
-                selectingDirectory={actionLoading === "select-opencode-project"}
+                selectingDirectory={actionLoading !== null}
               />
             </div>
           ) : (
@@ -1751,8 +1755,7 @@ const InstanceDetailPage: React.FC = () => {
                 type="button"
                 onClick={handleSaveDesktopStreamProfile}
                 disabled={
-                  actionLoading === "desktop-stream-profile" ||
-                  actionLoading === "desktop-stream-restart" ||
+                  actionLoading !== null ||
                   !desktopStreamDirty
                 }
                 className="app-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
@@ -1765,8 +1768,7 @@ const InstanceDetailPage: React.FC = () => {
                 type="button"
                 onClick={handleApplyDesktopStreamProfile}
                 disabled={
-                  actionLoading === "desktop-stream-profile" ||
-                  actionLoading === "desktop-stream-restart"
+                  actionLoading !== null
                 }
                 className="app-button-primary disabled:cursor-not-allowed disabled:opacity-50"
               >

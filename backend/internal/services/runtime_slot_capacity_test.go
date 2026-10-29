@@ -61,11 +61,12 @@ func TestSlotSchedulerSkipsFullBindingsWhenHeartbeatLags(t *testing.T) {
 			pods := &fakeRuntimePodRepo{pods: map[int64]*models.RuntimePod{}}
 			deployments := &fakeRuntimeDeploymentService{}
 			for _, id := range []int64{9, 10} {
-				endpoint, uid := fmt.Sprintf("https://10.0.0.%d:19090", id), fmt.Sprintf("uid-%d", id)
-				p := models.RuntimePod{ID: id, RuntimeType: kind, Namespace: "clawmanager-system", PodName: fmt.Sprintf("pool-%d", id), DeploymentName: kind + "-runtime", PodUID: &uid, AgentEndpoint: &endpoint, State: "ready", Capacity: 8}
+				endpoint, uid, ip := fmt.Sprintf("https://10.0.0.%d:19090", id), fmt.Sprintf("uid-%d", id), fmt.Sprintf("10.0.0.%d", id)
+				now := time.Now()
+				p := models.RuntimePod{ID: id, RuntimeType: kind, Namespace: "clawmanager-system", PodName: fmt.Sprintf("pool-%d", id), DeploymentName: kind + "-runtime", PodUID: &uid, AgentEndpoint: &endpoint, State: "ready", Capacity: 8, PodIP: &ip, LastSeenAt: &now, ImageRef: "repo/" + kind + ":test"}
 				pods.pods[id] = &p
 				pods.schedulable = append(pods.schedulable, p)
-				deployments.pods = append(deployments.pods, k8s.RuntimeDeploymentPod{RuntimeType: kind, Namespace: p.Namespace, PodName: p.PodName, PodUID: uid, DeploymentName: p.DeploymentName, State: "ready"})
+				deployments.pods = append(deployments.pods, k8s.RuntimeDeploymentPod{RuntimeType: kind, Namespace: p.Namespace, PodName: p.PodName, PodUID: uid, DeploymentName: p.DeploymentName, State: "ready", PodIP: p.PodIP, ImageRef: p.ImageRef})
 			}
 			fake := &fakeRuntimeAgentClient{createResponse: &RuntimeAgentCreateGatewayResponse{GatewayID: "gw-999-1", Status: "running"}}
 			agent := &strictSchedulerAgent{fake}
