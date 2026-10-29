@@ -240,19 +240,6 @@ jobs:
       - name: Wait for ClawManager deployment
         run: kubectl -n clawmanager-system rollout status deployment/clawmanager-app --timeout=300s
 
-      - name: Show cluster status on failure
-        if: failure()
-        run: |
-          kubectl get pods -A || true
-          kubectl get pvc -A || true
-          kubectl get events -A --sort-by=.lastTimestamp || true
-          kubectl -n clawmanager-system describe deployment mysql || true
-          kubectl -n clawmanager-system describe deployment clawmanager-app || true
-          kubectl -n clawmanager-system describe pod -l app=mysql || true
-          kubectl -n clawmanager-system describe pod -l app=clawmanager-app || true
-          kubectl -n clawmanager-system logs deployment/mysql --tail=200 || true
-          kubectl -n clawmanager-system logs deployment/clawmanager-app --tail=200 || true
-
       - name: Start port-forward
         run: |
           kubectl -n clawmanager-system port-forward svc/clawmanager-frontend 8443:443 > /tmp/clawmanager-port-forward.log 2>&1 &
@@ -267,6 +254,21 @@ jobs:
 
       - name: Verify web page is reachable
         run: curl --fail --insecure https://127.0.0.1:8443/ | grep -i "<!doctype html>"
+
+      - name: Show cluster status on failure
+        if: failure()
+        run: |
+          kubectl get pods -A || true
+          kubectl get pvc -A || true
+          kubectl get events -A --sort-by=.lastTimestamp || true
+          kubectl -n clawmanager-system describe deployment mysql || true
+          kubectl -n clawmanager-system describe deployment clawmanager-app || true
+          kubectl -n clawmanager-system describe pod -l app=mysql || true
+          kubectl -n clawmanager-system describe pod -l app=clawmanager-app || true
+          kubectl -n clawmanager-system logs deployment/mysql --tail=200 || true
+          kubectl -n clawmanager-system logs deployment/clawmanager-app --tail=200 || true
+          kubectl -n clawmanager-system logs deployment/clawmanager-app --previous --tail=200 || true
+          cat /tmp/clawmanager-port-forward.log 2>/dev/null || true
 
       - name: Stop port-forward
         if: always()
