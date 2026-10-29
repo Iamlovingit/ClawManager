@@ -34,13 +34,24 @@ func NewRuntimeSecurityLeaseHandler(controlToken string, issuer RuntimeLeaseIssu
 func (h *RuntimeSecurityLeaseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
-	// Keep the deadline active while closing/draining even rejected uploads.
+	// Bound uploads, and keep rejected connections from being reused.
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(2 * time.Second))
-	defer controller.SetReadDeadline(time.Time{})
+	rejected := false
+	defer func() {
+		if !rejected {
+			_ = controller.SetReadDeadline(time.Time{})
+		}
+	}()
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	defer r.Body.Close()
-	fail := func(status int) { http.Error(w, "runtime lease unavailable", status) }
+	fail := func(status int) {
+		rejected = true
+		w.Header().Set("Connection", "close")
+		_ = controller.SetReadDeadline(time.Now())
+		_ = r.Body.Close()
+		http.Error(w, "runtime lease unavailable", status)
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		fail(http.StatusMethodNotAllowed)

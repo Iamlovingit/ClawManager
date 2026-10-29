@@ -76,6 +76,9 @@ func TestRuntimeLeaseEarlyRejectionBoundsRealTCPBodyDrain(t *testing.T) {
 			if response.StatusCode != want || response.Header.Get("Cache-Control") != "no-store" {
 				t.Fatalf("unexpected rejection: %d %v", response.StatusCode, response.Header)
 			}
+			if !response.Close {
+				t.Fatal("rejected incomplete upload must close the connection")
+			}
 			select {
 			case <-closed:
 			case <-time.After(time.Second):
