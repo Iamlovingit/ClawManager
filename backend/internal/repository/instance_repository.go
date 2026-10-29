@@ -744,6 +744,7 @@ func buildV2SchedulerInstanceQuery(statuses []string, limit int) (string, []any)
 		FROM instances
 		WHERE status IN (%s)
 			AND LOWER(TRIM(COALESCE(description, ''))) NOT LIKE 'openclaw-upgrade-lab:%%'
+            AND NOT EXISTS (SELECT 1 FROM instance_lifecycle_manual_guards mg WHERE mg.instance_id=instances.id AND mg.token LIKE 'runtime_mgmt_%%')
 			AND runtime_type = ?
 			AND instance_mode = ?
 			AND workspace_path IS NOT NULL
@@ -945,7 +946,11 @@ func (r *instanceRepository) PromoteResetReplacement(ctx context.Context, source
 
 // Update updates an instance
 func (r *instanceRepository) Update(instance *models.Instance) error {
-	err := r.sess.Collection("instances").Find(db.Cond{"id": instance.ID}).Update(instance)
+	// Only ProtectRuntimeGeneration may write the sticky security marker. The
+	// model's omitempty tag excludes this zeroed field, even for stale structs.
+	update := *instance
+	update.RuntimeSecurityProfile = ""
+	err := r.sess.Collection("instances").Find(db.Cond{"id": instance.ID}).Update(&update)
 	if err != nil {
 		return fmt.Errorf("failed to update instance: %w", err)
 	}
